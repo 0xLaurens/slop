@@ -16,6 +16,7 @@ export interface DeploymentManifest {
 
 export interface DeploymentSource {
   source: string;
+  retained?: boolean;
 }
 
 export type DeploymentSources = Map<string, DeploymentSource>;
@@ -76,7 +77,7 @@ export async function sources(repo: string): Promise<DeploymentSources> {
   return result;
 }
 
-async function readManifest(file: string): Promise<DeploymentManifest> {
+export async function readManifest(file: string): Promise<DeploymentManifest> {
   if (!await exists(file)) return { version: 1, owner: 'slop', files: {} };
   const manifest = await json(file);
   if (!isRecord(manifest) || manifest.version !== 1 || manifest.owner !== 'slop' || !isRecord(manifest.files)) {
@@ -101,7 +102,7 @@ export async function preflight(config: string, desired: ReadonlyMap<string, Dep
     if (current !== null && !managed) conflicts.push(`${target}: unrelated existing file/directory`);
     else if (current !== null && current !== previous.files[target]) conflicts.push(`${target}: installed copy was edited`);
   }
-  if (conflicts.length) throw new Error(`No installed files changed. Resolve these conflicts first:\n${conflicts.join('\n')}`);
+  if (conflicts.length) throw new Error(`No installed files changed. Resolve these conflicts first:\n${conflicts.join('\n')}\nBack up edited copies outside the target directory, then restore the original deployed contents or manually remove the conflicting copy. Move unrelated files outside the target directory. Retry after reviewing your backup; ownership metadata must not be edited to bypass protection.`);
 }
 
 // Move old entries aside, deploy, then publish the manifest. Roll back normal
@@ -156,7 +157,7 @@ async function deploy(config: string, desired: ReadonlyMap<string, DeploymentSou
 async function stageSources(desired: DeploymentSources, workspace: string, stageSkill: StageSkill): Promise<void> {
   let index = 0;
   for (const [target, entry] of desired) {
-    if (target.startsWith('skills/')) {
+    if (target.startsWith('skills/') && !entry.retained) {
       const staged = await stageSkill({ source: entry.source, name: safeName(target.slice(7)),
         workspace: path.join(workspace, String(index++)) });
       entry.source = staged.directory;
@@ -173,10 +174,13 @@ export type InstallOptions = {
   config?: string;
   uninstall?: boolean;
   stageSkill?: StageSkill;
+  selected?: readonly string[];
+  log?: (message: string) => void;
+  guard?: () => Promise<void>;
+  beforeApply?: () => void;
 };
 
-export async function install({ repo = repository, config: override, uninstall = false, stageSkill = skillsAdd }: InstallOptions = {}): Promise<void> {
-  const config = configDirectory(override);
+export async function deploymentSession<T>(repo: string, config: string, action: (previous: DeploymentManifest) => Promise<T>): Promise<T> {
   await noLinks(config);
   const state = path.join(config, '.slop');
   await noLinks(state);
@@ -184,15 +188,42 @@ export async function install({ repo = repository, config: override, uninstall =
     await assertNoPendingUpdate(repo);
     await noLinks(path.join(state, 'manifest.json'));
     const previous = await readManifest(path.join(state, 'manifest.json'));
-    const desired: DeploymentSources = uninstall ? new Map() : await sources(repo);
-    await preflight(config, desired, previous);
-    return temporary('slop-install-', async (workspace) => {
-      await stageSources(desired, workspace, stageSkill);
-      await preflight(config, desired, previous);
-      await deploy(config, desired, previous, state);
-      console.log(`${uninstall ? 'Uninstalled managed files from' : 'Installed repository files into'} ${config}`);
-    });
+    return action(previous);
   }));
+}
+
+// Caller holds both repository and destination locks via deploymentSession.
+export async function applyDeployment(config: string, desired: DeploymentSources, previous: DeploymentManifest,
+  stageSkill: StageSkill = skillsAdd, beforeApply: () => void = () => {}): Promise<void> {
+  await preflight(config, desired, previous);
+  return temporary('slop-install-', async (workspace) => {
+    await stageSources(desired, workspace, stageSkill);
+    await preflight(config, desired, previous);
+    beforeApply();
+    await deploy(config, desired, previous, path.join(config, '.slop'));
+  });
+}
+
+export async function install({ repo = repository, config: override, uninstall = false, stageSkill = skillsAdd,
+  selected, log = console.log, guard, beforeApply }: InstallOptions = {}): Promise<void> {
+  const config = configDirectory(override);
+  return deploymentSession(repo, config, async (previous) => {
+    await guard?.();
+    const available = uninstall ? new Map<string, DeploymentSource>() : await sources(repo);
+    let desired = available;
+    if (selected !== undefined && !uninstall) {
+      desired = new Map();
+      for (const target of selected) {
+        const entry = available.get(target);
+        if (entry) desired.set(target, entry);
+        else if (Object.hasOwn(previous.files, target)) {
+          if (await exists(path.join(config, target))) desired.set(target, { source: path.join(config, target), retained: true });
+        } else throw new Error(`Unknown selection: ${target}`);
+      }
+    }
+    await applyDeployment(config, desired, previous, stageSkill, beforeApply);
+    log(`${uninstall ? 'Uninstalled managed files from' : 'Installed selected repository files into'} ${config}`);
+  });
 }
 
 async function main(): Promise<void> {

@@ -1,4 +1,4 @@
-import { spawnSync } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { mkdir } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -22,27 +22,45 @@ export function upstreamSource(upstream: RemoteUpstream): string {
 }
 
 // The isolated home/project keeps CLI bookkeeping out of the user's config.
-export const skillsAdd: StageSkill = async ({ source, name, workspace, skillPath }) => {
-  const home = path.join(workspace, 'home');
-  const cwd = path.join(workspace, 'project');
-  await Promise.all([mkdir(home, { recursive: true }), mkdir(cwd, { recursive: true })]);
-  const result = spawnSync(process.execPath, [cli, 'add', source, '--agent', 'opencode',
-    '--skill', name, '--copy', '--yes', ...(path.isAbsolute(source) ? [] : ['--full-depth'])], {
-    cwd, stdio: 'inherit',
-    env: { ...process.env, HOME: home, USERPROFILE: home,
-      XDG_CONFIG_HOME: path.join(home, '.config'), XDG_STATE_HOME: path.join(home, '.state'),
-      DISABLE_TELEMETRY: '1' },
-  });
-  if (result.error) throw result.error;
-  if (result.status !== 0) throw new Error(`skills add failed (${result.status ?? result.signal})`);
-  const directory = path.join(cwd, '.agents', 'skills', name);
-  if (await skillName(directory) !== name) throw new Error(`Upstream skill name changed: ${name}`);
-  await fingerprint(directory);
-  if (skillPath === undefined) return { directory };
-  const lock = await readSkillsLock(path.join(cwd, 'skills-lock.json'));
-  const selected = Object.hasOwn(lock.skills, name) ? lock.skills[name] : undefined;
-  if (selected?.skillPath !== skillPath) {
-    throw new Error(`Upstream skill path changed: expected ${skillPath}, received ${selected?.skillPath ?? 'no path'}`);
-  }
-  return { directory };
-};
+export function createSkillsAdd(log: (message: string) => void = () => {}): StageSkill {
+  return async ({ source, name, workspace, skillPath }) => {
+    const home = path.join(workspace, 'home');
+    const cwd = path.join(workspace, 'project');
+    await Promise.all([mkdir(home, { recursive: true }), mkdir(cwd, { recursive: true })]);
+    await new Promise<void>((resolve, reject) => {
+      const child = spawn(process.execPath, [cli, 'add', source, '--agent', 'opencode',
+        '--skill', name, '--copy', '--yes', ...(path.isAbsolute(source) ? [] : ['--full-depth'])], {
+        cwd, stdio: ['ignore', 'pipe', 'pipe'],
+        env: { ...process.env, HOME: home, USERPROFILE: home,
+          XDG_CONFIG_HOME: path.join(home, '.config'), XDG_STATE_HOME: path.join(home, '.state'),
+          DISABLE_TELEMETRY: '1' },
+      });
+      let tail = '';
+      let logError: unknown;
+      const output = (chunk: Buffer) => {
+        const text = chunk.toString();
+        tail = (tail + text).slice(-8192);
+        try { log(text); } catch (error) { logError = error; }
+      };
+      child.stdout.on('data', output);
+      child.stderr.on('data', output);
+      child.once('error', reject);
+      child.once('close', (code, signal) => {
+        if (logError) reject(logError);
+        else if (code === 0) resolve();
+        else reject(new Error(`skills add failed (${code ?? signal})\n${tail}`));
+      });
+    });
+    const directory = path.join(cwd, '.agents', 'skills', name);
+    if (await skillName(directory) !== name) throw new Error(`Upstream skill name changed: ${name}`);
+    await fingerprint(directory);
+    const lock = await readSkillsLock(path.join(cwd, 'skills-lock.json'));
+    const selected = Object.hasOwn(lock.skills, name) ? lock.skills[name] : undefined;
+    if (skillPath !== undefined && selected?.skillPath !== skillPath) {
+      throw new Error(`Upstream skill path changed: expected ${skillPath}, received ${selected?.skillPath ?? 'no path'}`);
+    }
+    return { directory, ...selected && { entry: selected } };
+  };
+}
+
+export const skillsAdd: StageSkill = createSkillsAdd();

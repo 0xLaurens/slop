@@ -2,7 +2,7 @@ import { readdir } from 'node:fs/promises';
 import path from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import { diagnostic, errorMessage, parseUpstream } from './data.ts';
-import type { SkillName, StageSkill } from './data.ts';
+import type { Diagnostic, SkillName, StageSkill } from './data.ts';
 import { fingerprint, isMain, readSkillsLock, noLinks, options, repository,
   safeName, skillHash, skillName, temporary, withMutex } from './lib.ts';
 import { skillsAdd, upstreamSource } from './skills-cli.ts';
@@ -23,6 +23,10 @@ export type UpdateOptions = {
   interactive?: boolean;
   ask?: (name: string) => Promise<boolean>;
   fetchSkill?: StageSkill;
+  selected?: readonly string[];
+  log?: (message: string) => void;
+  cancelled?: () => boolean;
+  report?: (value: Diagnostic) => void;
 };
 
 export interface UpdateResult {
@@ -38,10 +42,13 @@ type SkillContext = {
   interactive: boolean;
   ask: (name: string) => Promise<boolean>;
   fetchSkill: StageSkill;
+  log: (message: string) => void;
+  report: (value: Diagnostic) => void;
+  cancelled: () => boolean;
 };
 
 async function updateSkill(name: SkillName, snapshot: LockSnapshot, context: SkillContext): Promise<SkillOutcome> {
-  const { repo, interactive, ask, fetchSkill } = context;
+  const { repo, interactive, ask, fetchSkill, log, report, cancelled } = context;
   const current = path.join(repo, '.agents', 'skills', name);
   const lockFile = path.join(repo, 'skills-lock.json');
   await noLinks(current);
@@ -51,21 +58,22 @@ async function updateSkill(name: SkillName, snapshot: LockSnapshot, context: Ski
   const entry = Object.hasOwn(snapshot.lock.skills, name) ? snapshot.lock.skills[name] : undefined;
   const upstream = entry ? parseUpstream(entry) : { kind: 'local' } as const;
   if (!entry || upstream.kind === 'local') {
-    console.log(`${name}: no remote upstream; unchanged.`);
+    log(`${name}: no remote upstream; unchanged.`);
     return { status: 'unchanged', snapshot };
   }
   const localHash = await skillHash(current);
   const modified = localHash !== entry.computedHash;
   if (modified) {
-    diagnostic({ level: 'warn', event: 'skill.modified', message: 'Contents differ from the skills-lock.json baseline.',
+    report({ level: 'warn', event: 'skill.modified', message: 'Contents differ from the skills-lock.json baseline.',
       context: { repo, skill: name, lockFile } });
   }
   if (modified && (!interactive || !await ask(name))) {
-    console.log(`${name}: kept local version${interactive ? '' : ' (noninteractive run)'}.`);
+    log(`${name}: kept local version${interactive ? '' : ' (noninteractive run)'}.`);
     return { status: 'skipped', snapshot };
   }
   return temporary('slop-update-', async (workspace) => {
     const staged = await fetchSkill({ source: upstreamSource(upstream), name, workspace, skillPath: upstream.skillPath });
+    if (cancelled()) return { status: 'skipped', snapshot };
     if (await skillName(staged.directory) !== name) throw new Error(`Upstream skill name changed: ${name}`);
     await fingerprint(staged.directory); // Validate files excluded by the upstream hash too.
     const upstreamHash = await skillHash(staged.directory);
@@ -79,13 +87,13 @@ async function updateSkill(name: SkillName, snapshot: LockSnapshot, context: Ski
       snapshot = await commitUpdate({ repo, name, before, snapshot, nextLock,
         ...changed && { replacement: staged.directory } });
     }
-    console.log(`${name}: ${changed ? 'updated; previous copy saved under .slop/backups/.' : 'already up to date.'}`);
+    log(`${name}: ${changed ? 'updated; previous copy saved under .slop/backups/.' : 'already up to date.'}`);
     return { status: changed ? 'updated' : 'unchanged', snapshot };
   });
 }
 
 export async function updateSkills({ repo = repository, only, interactive = Boolean(process.stdin.isTTY && process.stdout.isTTY),
-  ask = confirm, fetchSkill = skillsAdd }: UpdateOptions = {}): Promise<UpdateResult> {
+  ask = confirm, fetchSkill = skillsAdd, selected: selections, log = console.log, cancelled = () => false, report = diagnostic }: UpdateOptions = {}): Promise<UpdateResult> {
   const selected = only === undefined ? undefined : safeName(only);
   const lockFile = path.join(repo, 'skills-lock.json');
   const result: UpdateResult = { updated: [], unchanged: [], skipped: [], failures: [] };
@@ -101,19 +109,23 @@ export async function updateSkills({ repo = repository, only, interactive = Bool
     const names = (await readdir(directory, { withFileTypes: true }))
       .filter((entry) => entry.name !== '.gitkeep').map((entry) => safeName(entry.name));
     if (selected && !names.includes(selected)) throw new Error(`Unknown skill: ${selected}`);
-    for (const name of names.filter((name) => !selected || name === selected).sort()) {
+    const selection = selections?.map(safeName);
+    for (const name of selection ?? []) if (!names.includes(name)) throw new Error(`Unknown skill: ${name}`);
+    for (const name of names.filter((name) => (!selected || name === selected) && (!selection || selection.includes(name))).sort()) {
+      if (cancelled()) { result.skipped.push(name); continue; }
+      log(`Checking ${name}…`);
       try {
-        const outcome = await updateSkill(name, snapshot, { repo, interactive, ask, fetchSkill });
+        const outcome = await updateSkill(name, snapshot, { repo, interactive, ask, fetchSkill, log, report, cancelled });
         snapshot = outcome.snapshot;
         result[outcome.status].push(name);
       } catch (error) {
-        diagnostic({ level: 'error', event: 'skill.update.failed', message: errorMessage(error), context: { repo, skill: name, lockFile } });
+        report({ level: 'error', event: 'skill.update.failed', message: errorMessage(error), context: { repo, skill: name, lockFile } });
         if (error instanceof UpdateRecoveryError) throw error;
         await assertNoPendingUpdate(repo);
         result.failures.push(name);
       }
     }
-    console.log(`Skills: ${result.updated.length} updated, ${result.unchanged.length} unchanged, ${result.skipped.length} kept/skipped, ${result.failures.length} failed.`);
+    log(`Skills: ${result.updated.length} updated, ${result.unchanged.length} unchanged, ${result.skipped.length} kept/skipped, ${result.failures.length} failed.`);
     return result;
   });
 }

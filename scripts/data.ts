@@ -35,6 +35,7 @@ export interface SkillsLock {
 
 export interface StagedSkill {
   directory: string;
+  entry?: SkillLockEntry;
 }
 
 export type SkillName = string & { readonly __brand: 'SkillName' };

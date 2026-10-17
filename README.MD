@@ -39,6 +39,70 @@ npm run install:global -- --config-dir "C:\Users\you\.config\opencode"
 Use the actual path reported by your OpenCode installation. This override is
 also useful for testing against a temporary directory.
 
+## Terminal interface
+
+```sh
+npm run tui
+# Optional: npm run tui -- --config-dir "/path/to/opencode"
+```
+
+The full-screen interface manages global installation, repository skill updates,
+skill/agent imports, global uninstall, and permanent source deletion. Existing
+script commands remain available for automation. No additional UI dependencies
+or build step are required.
+
+- **Arrow keys** navigate, **Space** toggles a checkbox, **Enter** continues,
+  and **Esc** goes back. **a** selects all; **n** deselects all.
+- Installation checkboxes reflect managed copies actually present in the global
+  target. Selections are **not saved**. Uninstalled items start unchecked.
+  Deselecting an installed item proposes uninstalling it; shared instructions
+  are selectable alongside skills and agents.
+  To uninstall all managed global copies, press **n** in **Install / uninstall**,
+  then continue and review the removals.
+- Every change requires a review screen followed by explicit confirmation,
+  defaulting to Cancel. Review/results screens scroll with arrows or Page Up/Down.
+- Edited or unrelated global files block changes. The warning explains how to
+  back up and resolve the conflict manually; there is no force-delete option.
+- Updates let you select remote-backed skills, with Keep/Replace choices for
+  local modifications and backups before replacement. Imports accept upstream
+  repository URLs (or GitHub `owner/repository` plus an exact skill name), local
+  skill folders, and local agent Markdown files. Existing names are never
+  overwritten. Local-only skills have no upstream-update action.
+- Imports and updates affect this repository only. Review `git diff`, then use
+  **Install / uninstall** to explicitly deploy the desired skills, agents, and instructions.
+- Upstream CLI output is captured rather than repeatedly taking over the
+  terminal. Each operation records diagnostics under `.slop/logs/`; results
+  show the log path. Logs are local and ignored by Git; they may contain source
+  paths and upstream output, so review them before sharing.
+- During work, Esc/Ctrl+C requests cancellation at a safe boundary. Fetches
+  finish before cancellation is checked; active file transactions are not
+  interrupted. Completed updates remain applied. Once permanent deletion
+  begins, its uninstall/commit/PR sequence finishes or reports recovery steps.
+
+### Permanently delete sources and open a PR
+
+This action deletes selected repository skills/agents, removes their skill-lock
+entries, and uninstalls their managed global copies **immediately**. It then
+creates one branch, commit, push, and PR for the entire selection. PR approval
+does not gate local removal. Shared instructions cannot be source-deleted here.
+
+Requirements are checked before deletion:
+
+- A clean Git working tree, with no uncommitted or untracked nonignored files.
+- HEAD at the latest origin default-branch commit, so unrelated branch commits
+  cannot accidentally enter the PR. Switch/update your checkout manually first.
+- A GitHub `origin` remote, Git author/committer identity, push access, and
+  installed/authenticated **GitHub CLI** (`gh auth login`). Fork-only and
+  non-GitHub PR workflows are not supported.
+- Unchanged, owned global copies and no pending recovery transaction.
+
+The tool does not stash, discard, or include unrelated work. It leaves you on the
+new `slop/delete-…` branch. If pushing or opening the PR fails after local changes,
+the branch and any completed commit are preserved, and results/logs explain
+what completed and how to retry. Check for an existing PR before retrying PR
+creation. No automatic rollback or silent branch switch happens. Imports and
+updates do not automatically commit or create PRs.
+
 ## Repository layout
 
 ```text
@@ -48,6 +112,8 @@ also useful for testing against a temporary directory.
 skills-lock.json                original skill sources and upstream hashes
 scripts/install.ts              installation and removal
 scripts/update-skills.ts        upstream updates with local-change checks
+scripts/tui.ts                  interactive management entry point
+scripts/manage.ts               inventory, imports, and deletion/PR workflow
 ```
 
 Agent files and global `AGENTS.md` are optional: add your own content when
@@ -194,3 +260,6 @@ hash compatibility, per-skill update choices, backups, conflict protection, prun
 uninstall, publication/rollback failures, and interrupted-update recovery. GitHub Actions runs
 type checks and the suite on Linux and Windows. Remote upstream access is required for real
 updates, but not for the test suite.
+The TUI tests cover keyboard selection, review/cancellation, selective deployment,
+imports, and deletion with real temporary Git branches/commits. GitHub/push calls
+are simulated: tests never open a real PR or change your live global files.
