@@ -168,8 +168,8 @@ export class Terminal {
         }
         if (key.name === 'escape') return finish(undefined);
         if (searchable && (text === '/' || key.name === '/')) { searching = true; render(); return; }
-        if (key.name === 'up') cursor--;
-        if (key.name === 'down') cursor++;
+        if (key.name === 'up') cursor = cursor > 0 ? cursor - 1 : visible.length - 1;
+        if (key.name === 'down') cursor = cursor < visible.length - 1 ? cursor + 1 : 0;
         if (key.name === 'pageup') cursor -= step;
         if (key.name === 'pagedown') cursor += step;
         if (key.name === 'home') cursor = 0;

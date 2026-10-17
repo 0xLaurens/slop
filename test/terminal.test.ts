@@ -20,6 +20,33 @@ function terminal(t: TestContext) {
 
 const choices = [{ value: 'first', label: 'First' }, { value: 'second', label: 'Second' }];
 
+test('arrow navigation wraps from first to last and last to first', async (t) => {
+  const { ui, key } = terminal(t);
+  const up = ui.select('Menu', choices, [], false);
+  key('up'); key('return');
+  assert.deepEqual(await up, ['second']);
+  const down = ui.select('Menu', choices, [], false);
+  key('down'); key('down'); key('return');
+  assert.deepEqual(await down, ['first']);
+});
+
+test('arrow navigation wraps within filtered choices', async (t) => {
+  const { ui, key } = terminal(t);
+  const selection = ui.select('Filtered', [...choices, { value: 'third', label: 'Third' }]);
+  key('/', '/'); key('i', 'ir'); key('return');
+  key('up'); key('space'); key('down'); key('space'); key('return');
+  assert.deepEqual(await selection, ['third', 'first']);
+});
+
+test('arrow navigation handles empty and single-choice lists', async (t) => {
+  const { ui, key } = terminal(t);
+  for (const items of [[], choices.slice(0, 1)]) {
+    const selection = ui.select('Menu', items, [], false);
+    key('up'); key('down'); key('return');
+    assert.deepEqual(await selection, items.map((choice) => choice.value));
+  }
+});
+
 test('arrow/Space/Enter edits selection without persisting preferences', async (t) => {
   const { ui, key } = terminal(t);
   const selection = ui.select('Selection', choices, ['first']);
