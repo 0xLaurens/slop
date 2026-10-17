@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import test from 'node:test';
 import type { TestContext } from 'node:test';
@@ -9,7 +9,7 @@ import { hasCode } from '../scripts/data.ts';
 import { install } from '../scripts/install.ts';
 import { readManifest } from '../scripts/deployment-state.ts';
 import { exists, fingerprint, readSkillsLock } from '../scripts/lib.ts';
-import { deleteWithPullRequest, importContent } from '../scripts/manage.ts';
+import { checkDeletionPrerequisites, deleteWithPullRequest, importContent } from '../scripts/manage.ts';
 import { assertInventory, deploymentChanges, deploymentPlan, inventory } from '../scripts/deployment-plan.ts';
 import { run } from '../scripts/process.ts';
 import type { Run } from '../scripts/process.ts';
@@ -175,6 +175,27 @@ async function deletionFixture(t: TestContext) {
   };
   return { ...files, execute, calls, head };
 }
+
+test('deletion prerequisites accept a canonical Git root for a directory alias', async (t) => {
+  const { repo, base, execute } = await deletionFixture(t);
+  const alias = path.join(base, 'repository alias');
+  try { await symlink(repo, alias, process.platform === 'win32' ? 'junction' : 'dir'); }
+  catch (error) { if (hasCode(error, 'EPERM')) return t.skip('Symlink permission unavailable'); throw error; }
+  const root = await realpath(repo);
+  const adapter: Run = (command, args, cwd) => command === 'git' && args[0] === 'rev-parse' && args[1] === '--show-toplevel'
+    ? Promise.resolve(root) : execute(command, args, cwd);
+  assert.equal((await checkDeletionPrerequisites(alias, adapter)).base, 'main');
+});
+
+test('deletion prerequisites reject a subdirectory before further checks', async (t) => {
+  const { repo } = await fixture(t);
+  const calls: string[] = [];
+  await assert.rejects(checkDeletionPrerequisites(path.join(repo, '.agents'), async (command, args) => {
+    calls.push(`${command} ${args.join(' ')}`);
+    return repo;
+  }), /Repository must be the Git working-tree root/);
+  assert.deepEqual(calls, ['git rev-parse --show-toplevel']);
+});
 
 test('batch deletion makes one real commit and one PR request, remaining on the deletion branch', async (t) => {
   const { repo, config, execute, calls } = await deletionFixture(t);

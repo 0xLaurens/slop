@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { mkdir, rename, rm } from 'node:fs/promises';
+import { mkdir, realpath, rename, rm } from 'node:fs/promises';
 import path from 'node:path';
 import { errorMessage, parseUpstream } from './data.ts';
 import type { SkillLockEntry, StageSkill } from './data.ts';
@@ -83,7 +83,9 @@ export interface DeletionOptions {
 export async function checkDeletionPrerequisites(repo: string, execute: Run = run) {
   const git = (...args: string[]) => execute('git', args, repo);
   const gh = (...args: string[]) => execute('gh', args, repo);
-  if (path.resolve(await git('rev-parse', '--show-toplevel')) !== path.resolve(repo)) throw new Error('Repository must be the Git working-tree root');
+  // Git may expand Windows short names or resolve directory aliases in its output.
+  const root = await git('rev-parse', '--show-toplevel');
+  if (await realpath(root) !== await realpath(repo)) throw new Error('Repository must be the Git working-tree root');
   if (await git('status', '--porcelain', '--untracked-files=all')) throw new Error('Working tree is not clean. Commit or resolve your changes manually before deleting. Nothing changed.');
   const startingBranch = await git('symbolic-ref', '--quiet', 'HEAD');
   await git('var', 'GIT_AUTHOR_IDENT');

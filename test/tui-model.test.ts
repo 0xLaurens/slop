@@ -71,11 +71,12 @@ test('import validation catches missing paths, collisions, and malformed sources
   await assert.rejects(prepareImport({ repo, request: { kind: 'local-skill', source: directory } }), /already exists/);
 });
 
-test('read-only deletion prerequisites reject dirty work before contacting GitHub', async () => {
+test('read-only deletion prerequisites reject dirty work before contacting GitHub', async (t) => {
+  const { repo } = await fixture(t);
   const calls: string[] = [];
-  await assert.rejects(checkDeletionPrerequisites('/repo', async (command, args) => {
+  await assert.rejects(checkDeletionPrerequisites(repo, async (command, args) => {
     calls.push(command);
-    return args[0] === 'rev-parse' ? '/repo' : ' M README.MD';
+    return args[0] === 'rev-parse' ? repo : ' M README.MD';
   }), /not clean/);
   assert.deepEqual(calls, ['git', 'git']);
 });
