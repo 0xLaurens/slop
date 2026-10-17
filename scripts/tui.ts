@@ -6,13 +6,18 @@ import { errorMessage, parseUpstream } from './data.ts';
 import type { StageSkill } from './data.ts';
 import { configDirectory, install } from './install.ts';
 import { isMain, noLinks, options, repository } from './lib.ts';
-import { assertInventory, checkDeletionPrerequisites, deleteWithPullRequest, importContent, installationChanges, inventory } from './manage.ts';
-import type { ImportRequest } from './manage.ts';
+import { checkDeletionPrerequisites, deleteWithPullRequest, importContent } from './manage.ts';
+import { deploymentChanges, deploymentPlan, inventory } from './deployment-plan.ts';
+import { prepareImport } from './import-plan.ts';
+import type { ImportRequest } from './import-plan.ts';
 import { createSkillsAdd } from './skills-cli.ts';
 import { Terminal } from './terminal.ts';
 import type { SelectionState } from './terminal.ts';
-import { completePath, fileChoices, installationReview, installationSummary, resolveImportPath, validateImport } from './tui-model.ts';
+import { completePath, fileChoices, installationReview, installationSummary, resolveImportPath } from './tui-model.ts';
 import { updateSkills } from './update-skills.ts';
+import { Cancelled } from './operation-errors.ts';
+import { failureOutcome, updateSummary } from './operation-outcome.ts';
+import type { Outcome } from './operation-outcome.ts';
 
 interface Operation {
   log: (message: string) => void;
@@ -22,10 +27,6 @@ interface Operation {
   check: () => void;
   atomic: (active?: boolean) => void;
 }
-interface Outcome { status: 'Completed' | 'Cancelled' | 'Partially completed' | 'Failed'; summary: string }
-
-class Cancelled extends Error {}
-
 async function operation(ui: Terminal, title: string, action: (operation: Operation) => Promise<Outcome>, totalSkills = 0): Promise<void> {
   const logs = path.join(repository, '.slop', 'logs');
   await noLinks(logs);
@@ -43,7 +44,7 @@ async function operation(ui: Terminal, title: string, action: (operation: Operat
     lines.push('Cancellation requested. Waiting for the current step to finish safely…');
     redraw();
   };
-  const check = () => { if (cancelled) throw new Cancelled('Cancelled before the next file transaction. Completed work, if any, is retained.'); };
+  const check = () => { if (cancelled || ui.shutdownRequested) throw new Cancelled('Cancelled before the next file transaction. Completed work, if any, is retained.'); };
   const diagnostic = (message: string) => { writeSync(fd, `${message}\n`); };
   const log = (message: string) => {
     diagnostic(message);
@@ -67,12 +68,11 @@ async function operation(ui: Terminal, title: string, action: (operation: Operat
   redraw();
   let outcome: Outcome;
   try {
-    outcome = await action({ log, diagnostic, stage, cancelled: () => cancelled, check, atomic: setAtomic });
+    outcome = await action({ log, diagnostic, stage, cancelled: () => cancelled || ui.shutdownRequested, check, atomic: setAtomic });
     diagnostic(`${outcome.status}\n${outcome.summary}`);
   } catch (error) {
-    const message = errorMessage(error);
-    outcome = { status: error instanceof Cancelled ? 'Cancelled' : message.includes('Recovery:') || message.includes('requires recovery') ? 'Partially completed' : 'Failed', summary: message };
-    diagnostic(`${outcome.status}: ${message}`);
+    outcome = failureOutcome(error);
+    diagnostic(`${outcome.status}: ${outcome.summary}`);
   } finally { closeSync(fd); }
   while (true) {
     const answer = (await ui.select(`${title} — ${outcome.status}`, [
@@ -88,24 +88,26 @@ async function operation(ui: Terminal, title: string, action: (operation: Operat
 
 async function manageInstallation(ui: Terminal, config: string): Promise<void> {
   const items = await inventory(repository, config);
-  const choices = await fileChoices(items, 'install');
+  const choices = await fileChoices({ items, mode: 'install', config });
   let selected = items.filter((item) => item.installed && item.managed).map((item) => item.target);
   const state: SelectionState = {};
+  const planFor = (selection: ReadonlySet<string>) => deploymentPlan({ repo: repository, config, items, selected: selection });
   while (true) {
     const answer = await ui.select('Install / uninstall', choices, selected, true, {
       state, intro: ['Checked = installed after applying changes. Repository files will not be deleted.', `Global destination: ${config}`],
-      summary: (selection) => installationSummary(items, selection),
+      summary: (selection) => installationSummary(planFor(selection)),
       empty: 'No skills, agents, or shared instructions available. Use Add skills or agents first.',
     });
     if (!answer) return;
     selected = answer;
-    const changes = installationChanges(items, new Set(selected));
+    const plan = planFor(new Set(selected));
+    const changes = deploymentChanges(plan);
     if (!changes.length) { await ui.page('No installation changes', 'Your selections match the current installation. Toggle a checkbox to install or uninstall.'); continue; }
-    if (!await ui.confirm('Review installation changes', installationReview(items, new Set(selected), config), 'Apply installation changes')) continue;
+    if (!await ui.confirm('Review installation changes', installationReview(plan), 'Apply installation changes')) continue;
     await operation(ui, 'Applying installation changes', async ({ stage, log, check, atomic }) => {
       check();
-      await install({ config, selected, stageSkill: stage, log, guard: () => assertInventory(repository, config, items), beforeApply: () => atomic() });
-      return { status: 'Completed', summary: `${installationSummary(items, new Set(selected))}\nRepository files were not deleted.\n\n${changes.join('\n')}` };
+      await install({ plan, stageSkill: stage, log, beforeApply: () => atomic() });
+      return { status: 'Completed', summary: `${installationSummary(plan)}\nRepository files were not deleted.\n\n${changes.join('\n')}` };
     }, selected.filter((target) => target.startsWith('skills/') && items.some((item) => item.target === target && item.source)).length);
     return;
   }
@@ -113,7 +115,7 @@ async function manageInstallation(ui: Terminal, config: string): Promise<void> {
 
 async function update(ui: Terminal, config: string): Promise<void> {
   const items = (await inventory(repository, config)).filter((item) => item.source && item.target.startsWith('skills/') && item.remote);
-  const choices = await fileChoices(items, 'update');
+  const choices = await fileChoices({ items, mode: 'update' });
   let selected: string[] = [];
   const state: SelectionState = {};
   while (true) {
@@ -142,7 +144,7 @@ async function update(ui: Terminal, config: string): Promise<void> {
         } });
       const status = result.failures.length ? result.updated.length ? 'Partially completed' : 'Failed'
         : cancelled() ? result.updated.length ? 'Partially completed' : 'Cancelled' : 'Completed';
-      return { status, summary: `${result.updated.length} updated · ${result.unchanged.length} unchanged · ${result.skipped.length} kept/skipped · ${result.failures.length} failed\nGlobal installation is unchanged.\nReview git diff, then use Install / uninstall to install updates globally.\n\n${Object.entries(result).map(([label, names]) => `${label}: ${names.length ? names.join(', ') : 'none'}`).join('\n')}` };
+      return { status, summary: updateSummary(result) };
     }, selected.length);
     return;
   }
@@ -160,11 +162,11 @@ async function add(ui: Terminal): Promise<void> {
     if (kind !== 'remote-skill' && kind !== 'local-skill' && kind !== 'agent') return;
     const saved = fields.get(kind) ?? { source: {}, name: {} };
     fields.set(kind, saved);
-    let step: 'source' | 'name' | 'review' = 'source';
-    let source = saved.source.value ?? '';
-    let request: ImportRequest | undefined;
+    type Step = { kind: 'source' } | { kind: 'name'; source: string }
+      | { kind: 'review'; candidate: Awaited<ReturnType<typeof prepareImport>> };
+    let step: Step = { kind: 'source' };
     while (true) {
-      if (step === 'source') {
+      if (step.kind === 'source') {
         const answer = await ui.text(kind === 'remote-skill' ? 'Git repository URL or GitHub owner/repository' : kind === 'agent' ? 'Path to agent Markdown file' : 'Path to skill folder', {
           state: saved.source,
           hint: kind === 'remote-skill' ? 'Example: owner/skills or https://github.com/owner/skills.git'
@@ -173,27 +175,28 @@ async function add(ui: Terminal): Promise<void> {
           validate: async (value) => {
             if (!value) throw new Error('Enter a source to continue.');
             if (kind === 'remote-skill') parseUpstream({ sourceType: 'github', source: value });
-            else await validateImport({ kind, source: resolveImportPath(value) });
+            else await prepareImport({ repo: repository, request: { kind, source: resolveImportPath(value) } });
           },
         });
         if (answer === undefined) break;
-        source = answer;
-        step = kind === 'remote-skill' ? 'name' : 'review';
+        step = kind === 'remote-skill' ? { kind: 'name', source: answer }
+          : { kind: 'review', candidate: await prepareImport({ repo: repository, request: { kind, source: resolveImportPath(answer) } }) };
+        continue;
       }
-      if (step === 'name') {
+      if (step.kind === 'name') {
+        const source: string = step.source;
         const name = await ui.text('Skill name', { state: saved.name, hint: 'Example: tdd · Use the exact name declared in SKILL.md.',
-          validate: async (value) => { await validateImport({ kind: 'remote-skill', source, name: value }); } });
-        if (name === undefined) { step = 'source'; continue; }
-        request = { kind: 'remote-skill', source, name };
-        step = 'review';
+          validate: async (value) => { await prepareImport({ repo: repository, request: { kind: 'remote-skill', source, name: value } }); } });
+        if (name === undefined) { step = { kind: 'source' }; continue; }
+        step = { kind: 'review', candidate: await prepareImport({ repo: repository, request: { kind: 'remote-skill', source, name } }) };
+        continue;
       }
-      if (step === 'review') {
-        if (kind !== 'remote-skill') request = { kind, source: resolveImportPath(source) };
-        if (!request) throw new Error('Missing import details');
-        const target = await validateImport(request);
-        if (!await ui.confirm('Review import', [`Source: ${request.source}`, `Destination: ${path.join(repository, '.agents', target)}`,
+      if (step.kind === 'review') {
+        const request: ImportRequest = step.candidate.request;
+        const destination = step.candidate.destination;
+        if (!await ui.confirm('Review import', [`Source: ${request.source}`, `Destination: ${destination}`,
           'Global installation: unchanged', 'Existing repository files: never overwritten', 'No automatic commit or PR.'], kind === 'agent' ? 'Import agent' : 'Import skill')) {
-          step = kind === 'remote-skill' ? 'name' : 'source'; continue;
+          step = kind === 'remote-skill' ? { kind: 'name', source: request.source } : { kind: 'source' }; continue;
         }
         const importRequest = request;
         await operation(ui, 'Importing repository files', async ({ stage, check, atomic }) => {
@@ -217,10 +220,10 @@ async function remove(ui: Terminal, config: string): Promise<void> {
   if (cancelled) return;
   const expected = await inventory(repository, config);
   const items = expected.filter((item) => item.source && item.target !== 'AGENTS.md');
-  const choices = await fileChoices(items, 'delete');
+  const choices = await fileChoices({ items, mode: 'delete' });
   let selected: string[] = [];
   const state: SelectionState = {};
-  while (true) {
+  while (!ui.shutdownRequested) {
     const targets = await ui.select('Permanently delete skills or agents', choices, selected, true, {
       state, intro: ['Deletes repository files AND uninstalls global copies immediately.', 'Creates one commit and PR. Removal does not wait for PR approval.'],
       summary: (selection) => `${selection.size} selected for permanent deletion`,
@@ -251,7 +254,7 @@ export async function main(): Promise<void> {
   const menuState: SelectionState = {};
   try {
     const config = configDirectory(args['config-dir']);
-    while (true) {
+    while (!ui.shutdownRequested) {
       const action = (await ui.select('Main menu', [
         { value: 'install', label: 'Install / uninstall', detail: 'Choose what is installed globally in OpenCode.', group: 'Global installation' },
         { value: 'update', label: 'Update skills from upstream', detail: 'Update repository copies; global installation stays unchanged.', group: 'Repository maintenance' },

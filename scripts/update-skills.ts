@@ -6,8 +6,9 @@ import type { Diagnostic, SkillName, StageSkill } from './data.ts';
 import { fingerprint, isMain, readSkillsLock, noLinks, options, repository,
   safeName, skillHash, skillName, temporary, withMutex } from './lib.ts';
 import { skillsAdd, upstreamSource } from './skills-cli.ts';
-import { assertNoPendingUpdate, commitUpdate, UpdateRecoveryError } from './update-transaction.ts';
-import type { LockSnapshot } from './update-transaction.ts';
+import { assertNoPendingPublication, commitSkill, SkillRecoveryError } from './skill-transaction.ts';
+import type { LockSnapshot } from './skill-transaction.ts';
+import { Cancelled } from './operation-errors.ts';
 
 async function confirm(name: string): Promise<boolean> {
   const input = createInterface({ input: process.stdin, output: process.stdout });
@@ -45,6 +46,19 @@ export interface UpdateResult {
   unchanged: string[];
   skipped: string[];
   failures: string[];
+}
+
+export class UpdateRunError extends Error {
+  readonly result: UpdateResult;
+  readonly remaining: readonly SkillName[];
+  override readonly cause: SkillRecoveryError;
+
+  constructor({ result, remaining, cause }: { result: UpdateResult; remaining: readonly SkillName[]; cause: SkillRecoveryError }) {
+    super(cause.message, { cause });
+    this.result = structuredClone(result);
+    this.remaining = [...remaining];
+    this.cause = cause;
+  }
 }
 
 type SkillOutcome = { status: 'updated' | 'unchanged' | 'skipped'; snapshot: LockSnapshot };
@@ -99,8 +113,8 @@ async function updateSkill(name: SkillName, snapshot: LockSnapshot, context: Ski
         skills: { ...snapshot.lock.skills, [name]: { ...entry, computedHash: upstreamHash } } };
       onTransaction(true);
       try {
-        snapshot = await commitUpdate({ repo, name, before, snapshot, nextLock,
-          ...changed && { replacement: staged.directory } });
+        snapshot = await commitSkill({ repo, name, change: { kind: 'update', before,
+          ...changed && { replacement: staged.directory } }, snapshot, nextLock });
       } finally { onTransaction(false); }
     }
     log(`${name}: ${changed ? 'updated; previous copy saved under .slop/backups/.' : 'already up to date.'}`);
@@ -115,7 +129,7 @@ export async function updateSkills({ repo = repository, only, interactive = Bool
   const lockFile = path.join(repo, 'skills-lock.json');
   const result: UpdateResult = { updated: [], unchanged: [], skipped: [], failures: [] };
   return withMutex(path.join(repo, '.slop', 'repository.lock'), async () => {
-    await assertNoPendingUpdate(repo);
+    await assertNoPendingPublication(repo);
     await noLinks(lockFile);
     const before = await fingerprint(lockFile);
     const lock = await readSkillsLock(lockFile);
@@ -132,7 +146,7 @@ export async function updateSkills({ repo = repository, only, interactive = Bool
     const progress = () => onProgress({ total: selectedNames.length,
       completed: result.updated.length + result.unchanged.length + result.skipped.length + result.failures.length,
       updated: result.updated.length, unchanged: result.unchanged.length, skipped: result.skipped.length, failed: result.failures.length });
-    for (const name of selectedNames) {
+    for (const [index, name] of selectedNames.entries()) {
       if (cancelled()) { result.skipped.push(name); progress(); continue; }
       log(`Checking ${name}…`);
       try {
@@ -140,10 +154,15 @@ export async function updateSkills({ repo = repository, only, interactive = Bool
         snapshot = outcome.snapshot;
         result[outcome.status].push(name);
       } catch (error) {
+        if (error instanceof Cancelled) { result.skipped.push(name); progress(); continue; }
         report({ level: 'error', event: 'skill.update.failed', message: errorMessage(error), context: { repo, skill: name, lockFile } });
-        if (error instanceof UpdateRecoveryError) throw error;
-        await assertNoPendingUpdate(repo);
         result.failures.push(name);
+        if (error instanceof SkillRecoveryError) throw new UpdateRunError({ result, remaining: selectedNames.slice(index + 1), cause: error });
+        try { await assertNoPendingPublication(repo); }
+        catch (pending) {
+          if (pending instanceof SkillRecoveryError) throw new UpdateRunError({ result, remaining: selectedNames.slice(index + 1), cause: pending });
+          throw pending;
+        }
       }
       progress();
     }

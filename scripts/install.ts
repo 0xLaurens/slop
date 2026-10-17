@@ -1,25 +1,17 @@
 import { spawnSync } from 'node:child_process';
-import { lstat, mkdir, readdir, rename, rm } from 'node:fs/promises';
+import { mkdir, rename, rm } from 'node:fs/promises';
 import path from 'node:path';
-import { diagnostic, errorMessage, isRecord } from './data.ts';
+import { diagnostic, errorMessage } from './data.ts';
 import type { StageSkill } from './data.ts';
-import { copy, exists, fingerprint, isMain, json, noLinks, options, repository,
-  safeName, skillName, temporary, withMutex, writeJson } from './lib.ts';
+import { copy, exists, fingerprint, isMain, noLinks, options, repository,
+  safeName, temporary, withMutex, writeJson } from './lib.ts';
+import { deploymentPlan, deploymentSources, inventory, validateDeployment } from './deployment-plan.ts';
+import type { DeploymentPlan } from './deployment-plan.ts';
+import { preflight, readManifest } from './deployment-state.ts';
+import type { DeploymentManifest, DeploymentSource, DeploymentSources } from './deployment-state.ts';
 import { skillsAdd } from './skills-cli.ts';
-import { assertNoPendingUpdate } from './update-transaction.ts';
-
-export interface DeploymentManifest {
-  version: 1;
-  owner: 'slop';
-  files: Record<string, string>;
-}
-
-export interface DeploymentSource {
-  source: string;
-  retained?: boolean;
-}
-
-export type DeploymentSources = Map<string, DeploymentSource>;
+import { assertNoPendingPublication } from './skill-transaction.ts';
+import { RecoveryRequiredError } from './operation-errors.ts';
 
 export function configDirectory(override?: string): string {
   if (override) return path.resolve(override);
@@ -34,82 +26,12 @@ export function configDirectory(override?: string): string {
   return path.resolve(directory);
 }
 
-function validTarget(target: string): boolean {
-  if (target === 'AGENTS.md') return true;
-  const [kind, name, extra] = target.split('/');
-  if (!name || extra !== undefined) return false;
-  try {
-    if (kind === 'skills') return safeName(name) === name;
-    if (kind === 'agents' && name.endsWith('.md')) {
-      return safeName(name.slice(0, -3)) === name.slice(0, -3);
-    }
-  } catch { return false; }
-  return false;
-}
-
-export async function sources(repo: string): Promise<DeploymentSources> {
-  const result: DeploymentSources = new Map();
-  for (const kind of ['agents', 'skills']) {
-    const directory = path.join(repo, '.agents', kind);
-    await noLinks(directory);
-    if (!await exists(directory)) continue;
-    for (const entry of await readdir(directory, { withFileTypes: true })) {
-      if (entry.name === '.gitkeep') continue;
-      const source = path.join(directory, entry.name);
-      await noLinks(source);
-      if (kind === 'agents') {
-        if (!entry.isFile() || !entry.name.endsWith('.md')) throw new Error(`Expected .agents/agents/<name>.md: ${source}`);
-        safeName(entry.name.slice(0, -3));
-      } else {
-        if (!entry.isDirectory()) throw new Error(`Expected .agents/skills/<name>/SKILL.md: ${source}`);
-        if (await skillName(source) !== entry.name) throw new Error(`Skill directory must match its frontmatter name: ${source}`);
-      }
-      const target = `${kind}/${entry.name}`;
-      await fingerprint(source); // Validate the entire tree, including nested links.
-      result.set(target, { source });
-    }
-  }
-  const instructions = path.join(repo, '.agents', 'instructions', 'AGENTS.md');
-  await noLinks(instructions);
-  if (!await exists(instructions)) return result;
-  if (!(await lstat(instructions)).isFile()) throw new Error('.agents/instructions/AGENTS.md must be a regular file');
-  result.set('AGENTS.md', { source: instructions });
-  return result;
-}
-
-export async function readManifest(file: string): Promise<DeploymentManifest> {
-  if (!await exists(file)) return { version: 1, owner: 'slop', files: {} };
-  const manifest = await json(file);
-  if (!isRecord(manifest) || manifest.version !== 1 || manifest.owner !== 'slop' || !isRecord(manifest.files)) {
-    throw new Error(`Invalid deployment manifest: ${file}`);
-  }
-  const files: DeploymentManifest['files'] = {};
-  for (const [target, hash] of Object.entries(manifest.files)) {
-    if (!validTarget(target) || typeof hash !== 'string' || !/^[a-f0-9]{64}$/.test(hash)) {
-      throw new Error(`Invalid deployment manifest entry: ${target}`);
-    }
-    files[target] = hash;
-  }
-  return { version: 1, owner: 'slop', files };
-}
-
-export async function preflight(config: string, desired: ReadonlyMap<string, DeploymentSource>, previous: DeploymentManifest): Promise<void> {
-  const conflicts: string[] = [];
-  for (const target of new Set([...desired.keys(), ...Object.keys(previous.files)])) {
-    if (!validTarget(target)) throw new Error(`Invalid install target: ${target}`);
-    const current = await fingerprint(path.join(config, target));
-    const managed = Object.hasOwn(previous.files, target);
-    if (current !== null && !managed) conflicts.push(`${target}: unrelated existing file/directory`);
-    else if (current !== null && current !== previous.files[target]) conflicts.push(`${target}: installed copy was edited`);
-  }
-  if (conflicts.length) throw new Error(`No installed files changed. Resolve these conflicts first:\n${conflicts.join('\n')}\nBack up edited copies outside the target directory, then restore the original deployed contents or manually remove the conflicting copy. Move unrelated files outside the target directory. Retry after reviewing your backup; ownership metadata must not be edited to bypass protection.`);
-}
-
 // Move old entries aside, deploy, then publish the manifest. Roll back normal
 // filesystem errors. A process/power failure may require manual recovery.
 async function deploy(config: string, desired: ReadonlyMap<string, DeploymentSource>, previous: DeploymentManifest, state: string): Promise<void> {
   const transaction = path.join(state, 'transaction');
-  if (await exists(transaction)) throw new Error(`Interrupted install: inspect/recover ${transaction} before retrying.`);
+  if (await exists(transaction)) throw new RecoveryRequiredError(`Interrupted install: inspect/recover ${transaction} before retrying.`,
+    { kind: 'deployment', transaction }, []);
   await mkdir(transaction);
   const changed = [...new Set([...desired.keys(), ...Object.keys(previous.files)])];
   const saved: string[] = [];
@@ -143,13 +65,16 @@ async function deploy(config: string, desired: ReadonlyMap<string, DeploymentSou
         await mkdir(path.dirname(path.join(config, target)), { recursive: true });
         await rename(path.join(transaction, target), path.join(config, target));
       }
+      await rm(transaction, { recursive: true });
     } catch (rollback) {
-      throw new AggregateError([error, rollback], `Install and rollback failed; recover files from ${transaction}`);
+      throw new RecoveryRequiredError(`Install and rollback failed; recover files from ${transaction}`,
+        { kind: 'deployment', transaction }, [error, rollback]);
     }
-    await rm(transaction, { recursive: true });
     throw error;
   }
-  await rm(transaction, { recursive: true });
+  try { await rm(transaction, { recursive: true }); }
+  catch (error) { throw new RecoveryRequiredError(`Installation completed; recover transaction cleanup at ${transaction}`,
+    { kind: 'deployment', transaction }, [error]); }
 }
 
 // CLI staging is intentionally not global: it avoids hard-coded CLI global
@@ -157,7 +82,7 @@ async function deploy(config: string, desired: ReadonlyMap<string, DeploymentSou
 async function stageSources(desired: DeploymentSources, workspace: string, stageSkill: StageSkill): Promise<void> {
   let index = 0;
   for (const [target, entry] of desired) {
-    if (target.startsWith('skills/') && !entry.retained) {
+    if (target.startsWith('skills/') && entry.origin === 'repository') {
       const staged = await stageSkill({ source: entry.source, name: safeName(target.slice(7)),
         workspace: path.join(workspace, String(index++)) });
       entry.source = staged.directory;
@@ -178,6 +103,7 @@ export type InstallOptions = {
   log?: (message: string) => void;
   guard?: () => Promise<void>;
   beforeApply?: () => void;
+  plan?: DeploymentPlan;
 };
 
 export async function deploymentSession<T>(repo: string, config: string, action: (previous: DeploymentManifest) => Promise<T>): Promise<T> {
@@ -185,7 +111,7 @@ export async function deploymentSession<T>(repo: string, config: string, action:
   const state = path.join(config, '.slop');
   await noLinks(state);
   return withMutex(path.join(repo, '.slop', 'repository.lock'), () => withMutex(path.join(state, 'install.lock'), async () => {
-    await assertNoPendingUpdate(repo);
+    await assertNoPendingPublication(repo);
     await noLinks(path.join(state, 'manifest.json'));
     const previous = await readManifest(path.join(state, 'manifest.json'));
     return action(previous);
@@ -193,35 +119,38 @@ export async function deploymentSession<T>(repo: string, config: string, action:
 }
 
 // Caller holds both repository and destination locks via deploymentSession.
-export async function applyDeployment(config: string, desired: DeploymentSources, previous: DeploymentManifest,
-  stageSkill: StageSkill = skillsAdd, beforeApply: () => void = () => {}): Promise<void> {
+export async function applyDeployment({ config, desired, previous, stageSkill = skillsAdd,
+  beforeApply = () => {}, validate = async () => {} }: {
+  config: string; desired: DeploymentSources; previous: DeploymentManifest; stageSkill?: StageSkill;
+  beforeApply?: () => void; validate?: () => Promise<void>;
+}): Promise<void> {
   await preflight(config, desired, previous);
   return temporary('slop-install-', async (workspace) => {
     await stageSources(desired, workspace, stageSkill);
     await preflight(config, desired, previous);
+    await validate();
     beforeApply();
     await deploy(config, desired, previous, path.join(config, '.slop'));
   });
 }
 
 export async function install({ repo = repository, config: override, uninstall = false, stageSkill = skillsAdd,
-  selected, log = console.log, guard, beforeApply }: InstallOptions = {}): Promise<void> {
-  const config = configDirectory(override);
+  selected, log = console.log, guard, beforeApply, plan: reviewed }: InstallOptions = {}): Promise<void> {
+  const config = configDirectory(override ?? reviewed?.config);
+  if (reviewed && (path.resolve(reviewed.repo) !== path.resolve(repo) || config !== path.resolve(reviewed.config) || selected || uninstall)) {
+    throw new Error('A reviewed plan must match the repository and destination and cannot be combined with another selection.');
+  }
   return deploymentSession(repo, config, async (previous) => {
     await guard?.();
-    const available = uninstall ? new Map<string, DeploymentSource>() : await sources(repo);
-    let desired = available;
-    if (selected !== undefined && !uninstall) {
-      desired = new Map();
-      for (const target of selected) {
-        const entry = available.get(target);
-        if (entry) desired.set(target, entry);
-        else if (Object.hasOwn(previous.files, target)) {
-          if (await exists(path.join(config, target))) desired.set(target, { source: path.join(config, target), retained: true });
-        } else throw new Error(`Unknown selection: ${target}`);
-      }
-    }
-    await applyDeployment(config, desired, previous, stageSkill, beforeApply);
+    const items = reviewed?.expected ?? await inventory(repo, config);
+    const plan = reviewed ?? deploymentPlan({ repo, config, items,
+      selected: new Set(uninstall ? [] : selected ?? items.filter((item) => item.source).map((item) => item.target)) });
+    const desired = deploymentSources(plan);
+    await validateDeployment(plan, desired);
+    await applyDeployment({ config, desired, previous, stageSkill, beforeApply, validate: async () => {
+      await guard?.();
+      await validateDeployment(plan, desired);
+    } });
     log(`${uninstall ? 'Uninstalled managed files from' : 'Installed selected repository files into'} ${config}`);
   });
 }

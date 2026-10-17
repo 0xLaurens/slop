@@ -1,102 +1,42 @@
 import { randomUUID } from 'node:crypto';
-import { lstat, mkdir, rename, rm } from 'node:fs/promises';
+import { mkdir, rename, rm } from 'node:fs/promises';
 import path from 'node:path';
 import { errorMessage, parseUpstream } from './data.ts';
 import type { SkillLockEntry, StageSkill } from './data.ts';
-import { applyDeployment, deploymentSession, preflight, readManifest, sources } from './install.ts';
-import type { DeploymentSources } from './install.ts';
-import { copy, exists, fingerprint, noLinks, readSkillsLock, safeName, skillHash, skillName,
+import { applyDeployment, deploymentSession } from './install.ts';
+import { preflight, sources } from './deployment-state.ts';
+import type { DeploymentSources } from './deployment-state.ts';
+import { copy, exists, fingerprint, noLinks, readSkillsLock, skillHash, skillName,
   temporary, withMutex, writeJson } from './lib.ts';
 import { run } from './process.ts';
 import type { Run } from './process.ts';
 import { skillsAdd, upstreamSource } from './skills-cli.ts';
-import { assertNoPendingUpdate } from './update-transaction.ts';
-
-export interface Item {
-  target: string;
-  source?: string;
-  installed: boolean;
-  managed: boolean;
-  edited: boolean;
-  remote: boolean;
-  modified: boolean;
-  sourceHash: string | null;
-  installedHash: string | null;
-}
-
-export async function inventory(repo: string, config: string): Promise<Item[]> {
-  await noLinks(path.join(config, '.slop', 'manifest.json'));
-  const manifest = await readManifest(path.join(config, '.slop', 'manifest.json'));
-  const available = await sources(repo);
-  const lock = await readSkillsLock(path.join(repo, 'skills-lock.json'));
-  const result: Item[] = [];
-  for (const target of [...new Set([...available.keys(), ...Object.keys(manifest.files)])].sort()) {
-    const source = available.get(target)?.source;
-    const managed = Object.hasOwn(manifest.files, target);
-    const current = await fingerprint(path.join(config, target));
-    const name = target.startsWith('skills/') ? target.slice(7) : '';
-    const entry = Object.hasOwn(lock.skills, name) ? lock.skills[name] : undefined;
-    result.push({ target, source, managed, installed: current !== null,
-      edited: current !== null && (!managed || current !== manifest.files[target]),
-      remote: Boolean(entry && parseUpstream(entry).kind === 'remote'),
-      modified: Boolean(source && entry && await skillHash(source) !== entry.computedHash),
-      sourceHash: source ? await fingerprint(source) : null, installedHash: current });
-  }
-  return result;
-}
-
-export function installationChanges(items: readonly Item[], selected: ReadonlySet<string>): string[] {
-  const changes: string[] = [];
-  for (const item of items) {
-    if (selected.has(item.target)) {
-      if (!item.installed) changes.push(`INSTALL ${item.target}`);
-      else if (item.source && item.sourceHash !== item.installedHash) changes.push(`REPLACE ${item.target}`);
-    } else if (item.managed) changes.push(`UNINSTALL ${item.target}${item.installed ? '' : ' (clear missing entry)'}`);
-  }
-  return changes;
-}
-
-export async function assertInventory(repo: string, config: string, expected: readonly Item[]): Promise<void> {
-  if (JSON.stringify(await inventory(repo, config)) !== JSON.stringify(expected)) {
-    throw new Error('Files or installation state changed after review. Return to the menu and review a fresh plan.');
-  }
-}
-
-export type ImportRequest =
-  | { kind: 'agent'; source: string }
-  | { kind: 'local-skill'; source: string }
-  | { kind: 'remote-skill'; source: string; name: string };
+import { assertNoPendingPublication, commitSkill } from './skill-transaction.ts';
+import { assertInventory } from './deployment-plan.ts';
+import type { Item } from './deployment-plan.ts';
+import { prepareImport } from './import-plan.ts';
+import type { ImportRequest } from './import-plan.ts';
+import { RecoveryRequiredError } from './operation-errors.ts';
 
 export async function importContent(repo: string, request: ImportRequest, stage: StageSkill = skillsAdd,
   check: () => void = () => {}): Promise<string> {
   return withMutex(path.join(repo, '.slop', 'repository.lock'), async () => {
-    await assertNoPendingUpdate(repo);
+    await assertNoPendingPublication(repo);
+    const candidate = await prepareImport({ repo, request });
     return temporary('slop-import-', async (workspace) => {
-      let source: string;
-      let name: string;
+      let source = candidate.request.source;
+      const { name, target, destination } = candidate;
       let entry: SkillLockEntry | undefined;
       if (request.kind === 'remote-skill') {
-        name = safeName(request.name);
         const upstream = parseUpstream({ sourceType: 'github', source: request.source });
         if (upstream.kind !== 'remote') throw new Error('Expected a remote repository');
-        const staged = await stage({ source: upstreamSource(upstream), name: safeName(name), workspace });
+        const staged = await stage({ source: upstreamSource(upstream), name, workspace });
         source = staged.directory;
         if (await skillName(source) !== name) throw new Error('Imported skill name differs');
         entry = { ...staged.entry, sourceType: staged.entry?.sourceType ?? 'git',
           source: staged.entry?.source ?? upstream.repository, computedHash: await skillHash(source) };
         if (parseUpstream(entry).kind !== 'remote') throw new Error('Remote import did not provide remote provenance');
-      } else {
-        source = path.resolve(request.source);
-        await noLinks(source);
-        if (request.kind === 'agent') {
-          if (!(await lstat(source)).isFile() || !source.endsWith('.md')) throw new Error('Select a regular agent Markdown (.md) file');
-          name = safeName(path.basename(source, '.md'));
-        } else name = await skillName(source);
       }
-      const target = request.kind === 'agent' ? `agents/${name}.md` : `skills/${name}`;
-      const destination = path.join(repo, '.agents', target);
-      await noLinks(destination);
-      if (await exists(destination)) throw new Error(`Import collision: ${target} already exists. Nothing overwritten.`);
       const before = await fingerprint(source);
       if (before === null) throw new Error('Import source disappeared');
       const staged = path.join(workspace, 'validated');
@@ -104,9 +44,17 @@ export async function importContent(repo: string, request: ImportRequest, stage:
       if (await fingerprint(staged) !== before || await fingerprint(source) !== before) throw new Error('Import source changed while copying');
       const lockFile = path.join(repo, 'skills-lock.json');
       await noLinks(lockFile);
+      const lockHash = await fingerprint(lockFile);
       const lock = await readSkillsLock(lockFile);
+      if (lockHash === null || await fingerprint(lockFile) !== lockHash) throw new Error('skills-lock.json changed while reading');
       if (request.kind !== 'agent' && Object.hasOwn(lock.skills, name)) throw new Error(`Import collision: lock entry ${name} already exists`);
-      if (entry) entry.computedHash = await skillHash(staged);
+      if (request.kind !== 'agent') {
+        const nextLock = { ...lock, skills: { ...lock.skills,
+          [name]: { ...entry ?? { sourceType: 'local', source: request.source }, computedHash: await skillHash(staged) } } };
+        await commitSkill({ repo, name, change: { kind: 'create', replacement: staged },
+          snapshot: { lock, fingerprint: lockHash }, nextLock, beforePublish: check });
+        return target;
+      }
       await mkdir(path.dirname(destination), { recursive: true });
       // Stage on the destination filesystem so publishing is an atomic rename.
       const publish = path.join(path.dirname(destination), `.import-${randomUUID()}`);
@@ -115,13 +63,6 @@ export async function importContent(repo: string, request: ImportRequest, stage:
         check();
         if (await exists(destination)) throw new Error(`Import collision: ${target} appeared during import`);
         await rename(publish, destination);
-        try {
-          if (request.kind !== 'agent') await writeJson(lockFile, { ...lock, skills: { ...lock.skills,
-            [name]: entry ?? { sourceType: 'local', source: request.source, computedHash: await skillHash(destination) } } });
-        } catch (error) {
-          await rm(destination, { recursive: true, force: true });
-          throw error;
-        }
       } finally { await rm(publish, { recursive: true, force: true }); }
       return target;
     });
@@ -183,7 +124,7 @@ export async function deleteWithPullRequest({ repo, config, targets, expected, e
     log(`Deletion batch:\n${unique.map((target) => `DELETE SOURCE + UNINSTALL ${target}`).join('\n')}`);
     const desired: DeploymentSources = new Map();
     for (const target of Object.keys(previous.files)) {
-      if (!unique.includes(target) && await exists(path.join(config, target))) desired.set(target, { source: path.join(config, target), retained: true });
+      if (!unique.includes(target) && await exists(path.join(config, target))) desired.set(target, { source: path.join(config, target), origin: 'installed' });
     }
     const checked = new Map(desired);
     for (const target of unique) {
@@ -221,7 +162,7 @@ export async function deleteWithPullRequest({ repo, config, targets, expected, e
     const title = `chore(agents): permanently delete ${unique.length} skill/agent source${unique.length === 1 ? '' : 's'}`;
     const body = `Remove repository sources and their skill lock entries.\n\n${unique.map((target) => `- ${target}`).join('\n')}\n\nManaged global copies were uninstalled locally. Unrelated files were preserved.`;
     try {
-      await applyDeployment(config, desired, previous);
+      await applyDeployment({ config, desired, previous });
       uninstalled = true;
       log('Global uninstall complete');
       for (const [file, hash] of sourceHashes) {
@@ -249,7 +190,8 @@ export async function deleteWithPullRequest({ repo, config, targets, expected, e
       log(`PR created: ${url}\nRemaining on ${branch}`);
       return url;
     } catch (error) {
-      throw new Error(`${errorMessage(error)}\nRecovery: remaining on ${branch}. Global uninstall: ${uninstalled ? 'completed' : 'not completed'}; commit: ${committed ? 'created' : 'not created'}; push: ${pushed ? 'completed' : 'not completed'}.\nReview git status and git diff first. ${committed ? '' : 'Finish only the reviewed source deletions and lock entries, then commit them. '}${pushed ? '' : `Retry: git push --set-upstream origin ${branch}. `}Check for an existing PR with gh pr list --head ${branch} before retrying gh pr create --repo ${repository} --base ${base} --head ${branch}. No automatic rollback or branch switch was attempted.`);
+      throw new RecoveryRequiredError(`${errorMessage(error)}\nRecovery: remaining on ${branch}. Global uninstall: ${uninstalled ? 'completed' : 'not completed'}; commit: ${committed ? 'created' : 'not created'}; push: ${pushed ? 'completed' : 'not completed'}.\nReview git status and git diff first. ${committed ? '' : 'Finish only the reviewed source deletions and lock entries, then commit them. '}${pushed ? '' : `Retry: git push --set-upstream origin ${branch}. `}Check for an existing PR with gh pr list --head ${branch} before retrying gh pr create --repo ${repository} --base ${base} --head ${branch}. No automatic rollback or branch switch was attempted.`,
+        { kind: 'deletion', branch, uninstalled, committed, pushed }, [error]);
     }
   });
 }

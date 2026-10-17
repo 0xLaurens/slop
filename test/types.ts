@@ -1,6 +1,7 @@
 // Compile-time regression tests, checked by `npm run typecheck`, not executed.
 import { options, safeName, skillName } from '../scripts/lib.ts';
-import type { DeploymentManifest, InstallOptions } from '../scripts/install.ts';
+import type { InstallOptions } from '../scripts/install.ts';
+import type { DeploymentManifest } from '../scripts/deployment-state.ts';
 import type { SkillName, StageSkill, Upstream, UpstreamEntry } from '../scripts/data.ts';
 import type { UpdateResult } from '../scripts/update-skills.ts';
 

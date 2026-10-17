@@ -3,7 +3,9 @@ import { PassThrough } from 'node:stream';
 import { setImmediate } from 'node:timers/promises';
 import test from 'node:test';
 import type { TestContext } from 'node:test';
+import stringWidth from 'string-width';
 import { cleanText, Terminal } from '../scripts/terminal.ts';
+import { fit, removeLastGrapheme, tail, wrap } from '../scripts/terminal-text.ts';
 
 function terminal(t: TestContext) {
   let raw = false;
@@ -11,7 +13,7 @@ function terminal(t: TestContext) {
   const input = Object.assign(new PassThrough(), { isTTY: true, setRawMode: (value: boolean) => { raw = value; } });
   const output = Object.assign(new PassThrough(), { isTTY: true, columns: 80, rows: 24 });
   output.on('data', (chunk: Buffer) => { screen += chunk.toString(); });
-  const ui = new Terminal(input as unknown as NodeJS.ReadStream, output as unknown as NodeJS.WriteStream);
+  const ui = new Terminal(input, output);
   t.after(() => ui.close());
   const key = (name: string, text = '', ctrl = false) => input.emit('keypress', text, { name, ctrl, meta: false, shift: false });
   return { ui, key, input, output, raw: () => raw, screen: () => screen };
@@ -241,4 +243,116 @@ test('keyboard help returns to the same selection', async (t) => {
   key('return'); await setImmediate();
   key('return');
   assert.deepEqual(await selected, ['first']);
+});
+
+test('one-row list viewports keep the focused choice visible through navigation and resize', async (t) => {
+  const { ui, key, output, screen } = terminal(t);
+  output.rows = 6;
+  const selection = ui.select('Choose', choices);
+  const frame = () => cleanText(screen().split('\x1b[2J').at(-1) ?? '');
+  assert.match(frame(), /› \[ \] First/);
+  key('down');
+  assert.match(frame(), /› \[ \] Second/);
+  key('space');
+  output.rows = 1; output.emit('resize');
+  assert.equal(frame().split('\r\n').length, 1);
+  assert.match(frame(), /› \[x\] Second/);
+  key('home');
+  assert.match(frame(), /› \[ \] First/);
+  key('return');
+  assert.deepEqual(await selection, ['second']);
+});
+
+test('terminal text geometry preserves graphemes and measures display cells', () => {
+  assert.equal(fit('中文测试', 5), '中文…');
+  assert.equal(fit('👨‍👩‍👧‍👦abc', 3), '👨‍👩‍👧‍👦…');
+  assert.deepEqual(wrap('中文测试', 4), ['中文', '测试']);
+  assert.deepEqual(wrap('👨‍👩‍👧‍👦👨‍👩‍👧‍👦', 2), ['👨‍👩‍👧‍👦', '👨‍👩‍👧‍👦']);
+  assert.deepEqual(wrap('e\u0301e\u0301', 1), ['e\u0301', 'e\u0301']);
+  assert.deepEqual(wrap('中', 1), ['…']);
+  assert.equal(removeLastGrapheme('hello👨‍👩‍👧‍👦'), 'hello');
+  assert.equal(tail('abc中文', 3), '文');
+});
+
+test('Unicode pages and text input stay within terminal cells after resizing', async (t) => {
+  const { ui, key, output, screen } = terminal(t);
+  output.columns = 12; output.rows = 8;
+  const page = ui.page('中文👨‍👩‍👧‍👦', '中文测试👨‍👩‍👧‍👦e\u0301\t'.repeat(20));
+  const frame = () => cleanText(screen().split('\x1b[2J').at(-1) ?? '');
+  const assertBounds = () => {
+    assert.ok(frame().split('\n').every((line) => stringWidth(line) < output.columns));
+    assert.ok(frame().split('\n').length <= output.rows);
+  };
+  assertBounds();
+  output.columns = 5; output.emit('resize'); key('end');
+  assertBounds(); key('return'); await page;
+  output.columns = 12;
+  const text = ui.text('Path');
+  key('x', '中文测试👨‍👩‍👧‍👦');
+  assert.match(frame(), /▏/); assertBounds();
+  key('backspace'); key('return');
+  assert.equal(await text, '中文测试');
+});
+
+test('close settles every suspended screen and refuses new screens without repainting', async (t) => {
+  const { ui, key, screen } = terminal(t);
+  const selection = ui.select('Skills', choices);
+  key('?', '?');
+  const nested = ui.page('Nested page', 'Details');
+  ui.close();
+  const closedScreen = screen();
+  assert.equal(await selection, undefined);
+  assert.equal(await nested, false);
+  assert.equal(await ui.text('Closed'), undefined);
+  ui.progress('Closed', []);
+  assert.equal(screen(), closedScreen);
+});
+
+test('signals request shutdown rather than merely backing out of a nested screen', async (t) => {
+  const { ui, key } = terminal(t);
+  const selection = ui.select('Skills', choices);
+  key('?', '?');
+  process.emit('SIGTERM', 'SIGTERM');
+  assert.equal(ui.shutdownRequested, true);
+  assert.equal(await selection, undefined);
+  assert.equal(await ui.select('Do not reopen', choices), undefined);
+});
+
+test('shutdown during an atomic operation waits for the next cancellable boundary', async (t) => {
+  const { ui, raw } = terminal(t);
+  let cancelled = false;
+  ui.progress('Atomic publication', []);
+  process.emit('SIGTERM', 'SIGTERM');
+  assert.equal(ui.shutdownRequested, true);
+  assert.equal(raw(), true);
+  ui.progress('Next safe boundary', [], () => { cancelled = true; });
+  assert.equal(cancelled, true);
+  ui.close();
+  assert.equal(raw(), false);
+});
+
+test('late validation after close cannot repaint or finish another screen', async (t) => {
+  const { ui, key, screen } = terminal(t);
+  let resolveValidation: (() => void) | undefined;
+  const text = ui.text('Path', { validate: () => new Promise<void>((resolve) => { resolveValidation = resolve; }) });
+  key('x', 'path'); key('return'); ui.close();
+  const closedScreen = screen();
+  assert.equal(await text, undefined);
+  resolveValidation?.(); await setImmediate();
+  assert.equal(screen(), closedScreen);
+});
+
+test('actual input bytes drive selection without synthetic keypress events', async (t) => {
+  const { ui, input } = terminal(t);
+  const selection = ui.select('Skills', choices);
+  input.write('\x1b[B \r');
+  assert.deepEqual(await selection, ['second']);
+});
+
+test('screen rendering errors reject their owner and leave the terminal reusable', async (t) => {
+  const { ui, key } = terminal(t);
+  await assert.rejects(ui.select('Broken', choices, [], true, { summary: () => { throw new Error('Cannot build summary'); } }), /Cannot build summary/);
+  const next = ui.select('Next', choices);
+  key('space'); key('return');
+  assert.deepEqual(await next, ['first']);
 });

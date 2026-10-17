@@ -4,37 +4,46 @@ import path from 'node:path';
 import { errorMessage } from './data.ts';
 import type { SkillName, SkillsLock } from './data.ts';
 import { copy, exists, fingerprint, noLinks, writeJson } from './lib.ts';
+import { RecoveryRequiredError } from './operation-errors.ts';
 
-export class UpdateRecoveryError extends AggregateError {
+export class SkillRecoveryError extends RecoveryRequiredError {
   constructor(transaction: string, errors: unknown[]) {
-    super(errors, `Update requires recovery from ${transaction}: ${errors.map(errorMessage).join('; ')}`);
+    super(`Skill publication requires recovery from ${transaction}: ${errors.map(errorMessage).join('; ')}`,
+      { kind: 'skill', transaction }, errors);
   }
 }
 
-export async function assertNoPendingUpdate(repo: string): Promise<void> {
+export async function assertNoPendingPublication(repo: string): Promise<void> {
+  // Keep the persisted path compatible with interrupted updates from older versions.
   const transaction = path.join(repo, '.slop', 'update-transaction');
   await noLinks(transaction);
   if (await exists(transaction)) {
-    throw new UpdateRecoveryError(transaction, [new Error('Interrupted update; inspect journal.json and recover before retrying')]);
+    throw new SkillRecoveryError(transaction, [new Error('Interrupted update/import; inspect journal.json and recover before retrying')]);
   }
 }
 
 export type LockSnapshot = { lock: SkillsLock; fingerprint: string };
 
-type CommitUpdate = {
+type SkillChange =
+  | { kind: 'create'; replacement: string }
+  | { kind: 'update'; before: string; replacement?: string };
+
+type CommitSkill = {
   repo: string;
   name: SkillName;
-  before: string;
+  change: SkillChange;
   snapshot: LockSnapshot;
   nextLock: SkillsLock;
-  replacement?: string;
+  beforePublish?: () => void;
 };
 
 // One skill and its baseline form a transaction. Prepare everything before moving
 // live files. The journal and both locks survive interruption; successful updates
 // retain the original skill in backups. This is recoverable, not power-loss atomic.
-export async function commitUpdate({ repo, name, before, snapshot, nextLock, replacement }: CommitUpdate): Promise<LockSnapshot> {
-  await assertNoPendingUpdate(repo);
+export async function commitSkill({ repo, name, change, snapshot, nextLock, beforePublish = () => {} }: CommitSkill): Promise<LockSnapshot> {
+  await assertNoPendingPublication(repo);
+  const before = change.kind === 'create' ? null : change.before;
+  const { replacement } = change;
   const transaction = path.join(repo, '.slop', 'update-transaction');
   const current = path.join(repo, '.agents', 'skills', name);
   const lockFile = path.join(repo, 'skills-lock.json');
@@ -58,16 +67,19 @@ export async function commitUpdate({ repo, name, before, snapshot, nextLock, rep
     if (replacement !== undefined) await copy(replacement, prepared);
     const skillAfter = replacement === undefined ? before : await fingerprint(prepared);
     if (skillAfter === null) throw new Error('Prepared skill disappeared');
-    const journal = { version: 1, name, backup: replacement === undefined ? null : path.relative(repo, backup),
+    const journal = { version: 1, kind: change.kind, name, backup: change.kind === 'update' && replacement !== undefined ? path.relative(repo, backup) : null,
       skillBefore: before, skillAfter, lockBefore: snapshot.fingerprint, lockAfter };
     await writeJson(path.join(transaction, 'journal.json'), { ...journal, phase: 'prepared' });
     // Recheck after preparation too: copying a large tree takes time.
     if (await fingerprint(current) !== before) throw new Error('Changed while updating; retry after saving edits');
     if (await fingerprint(lockFile) !== snapshot.fingerprint) throw new Error('skills-lock.json changed during update');
+    beforePublish();
     if (replacement !== undefined) {
-      await mkdir(path.dirname(backup), { recursive: true });
-      await rename(current, backup);
-      saved = true;
+      if (change.kind === 'update') {
+        await mkdir(path.dirname(backup), { recursive: true });
+        await rename(current, backup);
+        saved = true;
+      } else await mkdir(path.dirname(current), { recursive: true });
       await rename(prepared, current);
       installed = true;
     }
@@ -88,13 +100,13 @@ export async function commitUpdate({ repo, name, before, snapshot, nextLock, rep
       if (saved) await rename(backup, current);
       await rm(transaction, { recursive: true });
     } catch (rollback) {
-      throw new UpdateRecoveryError(transaction, [error, rollback]);
+      throw new SkillRecoveryError(transaction, [error, rollback]);
     }
     throw error;
   }
   // Cleanup failure must not roll back an already committed update or allow the
   // next skill to proceed with unresolved transaction state.
   try { await rm(transaction, { recursive: true }); }
-  catch (error) { throw new UpdateRecoveryError(transaction, [error]); }
+  catch (error) { throw new SkillRecoveryError(transaction, [error]); }
   return committed;
 }

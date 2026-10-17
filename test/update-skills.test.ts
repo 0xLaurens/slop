@@ -7,8 +7,8 @@ import test from 'node:test';
 import type { TestContext } from 'node:test';
 import { exists, fingerprint, json, readSkillsLock, writeJson } from '../scripts/lib.ts';
 import { install } from '../scripts/install.ts';
-import { updateSkills } from '../scripts/update-skills.ts';
-import { UpdateRecoveryError } from '../scripts/update-transaction.ts';
+import { updateSkills, UpdateRunError } from '../scripts/update-skills.ts';
+import { SkillRecoveryError } from '../scripts/skill-transaction.ts';
 import { fixture, makeSkill, tracked, upstream } from './fixtures.ts';
 
 // Named builtin imports must be refreshed after installing AND restoring mocks.
@@ -134,8 +134,9 @@ test('rollback failure preserves both errors and recovery files, and stops later
     fetched.push(options.name);
     return upstream(options);
   } }), (error: unknown) => {
-    assert.ok(error instanceof UpdateRecoveryError);
-    assert.deepEqual(error.errors.map((value: Error) => value.message), ['Lock publication failed', 'Restore failed']);
+    assert.ok(error instanceof UpdateRunError);
+    assert.ok(error.cause instanceof SkillRecoveryError);
+    assert.deepEqual(error.cause.errors.map((value: Error) => value.message), ['Lock publication failed', 'Restore failed']);
     assert.match(error.message, /Lock publication failed; Restore failed/);
     return true;
   });
