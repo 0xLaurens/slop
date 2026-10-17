@@ -1,0 +1,16 @@
+{
+  "name": "slop",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=22.20.0" },
+  "scripts": {
+    "install:global": "node scripts/install.ts",
+    "uninstall:global": "node scripts/install.ts --uninstall",
+    "skills:update": "node scripts/update-skills.ts",
+    "test": "node --test test/*.test.ts"
+  },
+  "dependencies": {
+    "skills": "1.7.2",
+    "yaml": "2.8.3"
+  }
+}
