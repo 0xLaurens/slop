@@ -43,10 +43,18 @@ export type StageSkill = (options: {
   source: string;
   name: SkillName;
   workspace: string;
+  // Remote updates must resolve to this exact path in the fetched repository.
+  skillPath?: string;
 }) => Promise<StagedSkill>;
 
 // The wire entry retains provenance; operational code only sees this validated model.
-export type Upstream = { kind: 'local' } | { kind: 'remote'; source: string };
+export type RemoteUpstream = {
+  kind: 'remote';
+  repository: string;
+  skillPath?: string;
+  ref?: string;
+};
+export type Upstream = { kind: 'local' } | RemoteUpstream;
 
 export function parseUpstream(entry: UpstreamEntry): Upstream {
   switch (entry.sourceType) {
@@ -64,23 +72,35 @@ export function parseUpstream(entry: UpstreamEntry): Upstream {
   }
   let source = entry.sourceUrl || entry.source;
   if (!source || source.startsWith('-')) throw new Error('Invalid upstream source');
-  if (!(entry.sourceType === 'github' && /^[\w.-]+\/[\w.-]+$/.test(source))
-      && !/^(https:\/\/|ssh:\/\/|git@)/.test(source)) {
+  if (entry.sourceType === 'github' && /^[\w.-]+\/[\w.-]+$/.test(source)) {
+    source = `https://github.com/${source.replace(/\.git$/, '')}.git`;
+  }
+  if (!/^(https:\/\/|ssh:\/\/|git@)/.test(source)) {
     throw new Error('Upstream needs an unambiguous repository URL');
   }
-  if (entry.skillPath && (entry.sourceType === 'github' || entry.sourceType === 'gitlab')) {
-    if (entry.skillPath.includes('\\')
-        || entry.skillPath.split('/').some((part) => part === '..' || part === '.')
-        || entry.skillPath.startsWith('/') || /[?#]/.test(entry.skillPath)
-        || !/(^|\/)SKILL\.md$/.test(entry.skillPath)) throw new Error('Invalid upstream skillPath');
-    const folder = entry.skillPath.replace(/(^|\/)SKILL\.md$/, '');
-    // Generic .git/SSH URLs cannot carry subpaths in the pinned CLI.
-    if (folder && !source.endsWith('.git') && !source.startsWith('git@') && !source.startsWith('ssh://')) {
-      source = `${source.replace(/\/$/, '')}/${folder}`;
+  if (/[\s?#]/.test(source)) throw new Error('Upstream repository must not contain whitespace, a query, or a fragment');
+  source = source.replace(/\/$/, '');
+  if (source.startsWith('git@')) {
+    if (!/^git@[^/:]+:.+$/.test(source)) throw new Error('Invalid upstream SSH repository');
+  } else {
+    const url = new URL(source);
+    if (!url.hostname || url.pathname === '/') throw new Error('Invalid upstream repository URL');
+    if (url.hostname === 'github.com' && !/^\/[^/]+\/[^/]+$/.test(url.pathname)) {
+      throw new Error('Upstream repository must be a repository root, not a tree or skill URL');
+    }
+    if (entry.sourceType === 'gitlab' && url.pathname.includes('/-/')) {
+      throw new Error('Upstream repository must be a repository root, not a tree or skill URL');
     }
   }
-  if (entry.ref) source += `#${entry.ref}`;
-  return { kind: 'remote', source };
+  if (entry.skillPath !== undefined) {
+    if (entry.skillPath.includes('\\')
+        || entry.skillPath.split('/').some((part) => !part || part === '..' || part === '.')
+        || entry.skillPath.startsWith('/') || /[?#]/.test(entry.skillPath)
+        || !/(^|\/)SKILL\.md$/.test(entry.skillPath)) throw new Error('Invalid upstream skillPath');
+  }
+  if (entry.ref !== undefined && (!entry.ref || /[\s\x00-\x1f]/.test(entry.ref))) throw new Error('Invalid upstream ref');
+  return { kind: 'remote', repository: source, ...entry.skillPath !== undefined && { skillPath: entry.skillPath },
+    ...entry.ref !== undefined && { ref: entry.ref } };
 }
 
 export type Diagnostic = {

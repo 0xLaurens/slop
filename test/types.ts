@@ -15,7 +15,7 @@ export type InstallCallback = Expect<Equal<NonNullable<InstallOptions['stageSkil
 export type ValidatedName = Expect<Equal<ReturnType<typeof safeName>, SkillName>>;
 export type FrontmatterName = Expect<Equal<Awaited<ReturnType<typeof skillName>>, SkillName>>;
 export type StageName = Expect<Equal<Parameters<StageSkill>[0]['name'], SkillName>>;
-export type RemoteSource = Expect<Equal<Extract<Upstream, { kind: 'remote' }>['source'], string>>;
+export type RemoteRepository = Expect<Equal<Extract<Upstream, { kind: 'remote' }>['repository'], string>>;
 
 // @ts-expect-error Unknown flags must not silently become any.
 args.typo;
@@ -31,7 +31,7 @@ const invalidResult: UpdateResult = { updated: [123], skipped: [], failures: [] 
 const invalidName: SkillName = '../escape';
 // @ts-expect-error Staging requires a validated name, not a workspace or source string.
 const invalidStageOptions: Parameters<StageSkill>[0] = { source: '/source', name: '/workspace', workspace: 'demo' };
-// @ts-expect-error Remote upstreams always have a validated source.
+// @ts-expect-error Remote upstreams always have a validated repository.
 const missingRemoteSource: Upstream = { kind: 'remote' };
 // @ts-expect-error Local upstreams cannot carry remote-source operational state.
-const invalidLocal: Upstream = { kind: 'local', source: 'example/skills' };
+const invalidLocal: Upstream = { kind: 'local', repository: 'https://github.com/example/skills.git' };

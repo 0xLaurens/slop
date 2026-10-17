@@ -1,5 +1,4 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { spawnSync } from 'node:child_process';
 import { cp, lstat, mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -8,10 +7,9 @@ import { parseArgs } from 'node:util';
 import type { ParseArgsOptionsConfig } from 'node:util';
 import { parse } from 'yaml';
 import { diagnostic, hasCode, isRecord, parseSkillsLock } from './data.ts';
-import type { SkillName, SkillsLock, StagedSkill, StageSkill } from './data.ts';
+import type { SkillName, SkillsLock } from './data.ts';
 
 export const repository = fileURLToPath(new URL('../', import.meta.url));
-const cli = fileURLToPath(new URL('../node_modules/skills/bin/cli.mjs', import.meta.url));
 
 export async function exists(file: string): Promise<boolean> {
   try { await lstat(file); return true; }
@@ -119,28 +117,6 @@ export async function temporary<T>(prefix: string, action: (directory: string) =
   const directory = await mkdtemp(path.join(process.env.SLOP_TMPDIR || tmpdir(), prefix));
   try { return await action(directory); }
   finally { await rm(directory, { recursive: true, force: true }); }
-}
-
-// Always run the pinned CLI with an isolated home and cwd. It never touches the
-// user's global skills or CLI tracking/preferences before our conflict checks.
-export async function skillsAdd({ source, name, workspace }: Parameters<StageSkill>[0]): Promise<StagedSkill & { lock: SkillsLock }> {
-  const home = path.join(workspace, 'home');
-  const cwd = path.join(workspace, 'project');
-  await mkdir(home, { recursive: true });
-  await mkdir(cwd, { recursive: true });
-  const result = spawnSync(process.execPath, [cli, 'add', source, '--agent', 'opencode',
-    '--skill', name, '--copy', '--yes', ...(path.isAbsolute(source) ? [] : ['--full-depth'])], {
-    cwd, stdio: 'inherit',
-    env: { ...process.env, HOME: home, USERPROFILE: home,
-      XDG_CONFIG_HOME: path.join(home, '.config'), XDG_STATE_HOME: path.join(home, '.state'),
-      DISABLE_TELEMETRY: '1' },
-  });
-  if (result.error) throw result.error;
-  if (result.status !== 0) throw new Error(`skills add failed (${result.status ?? result.signal})`);
-  const directory = path.join(cwd, '.agents', 'skills', name);
-  if (await skillName(directory) !== name) throw new Error(`Upstream skill name changed: ${name}`);
-  await fingerprint(directory);
-  return { directory, lock: await readSkillsLock(path.join(cwd, 'skills-lock.json')) };
 }
 
 export async function copy(source: string, destination: string): Promise<void> {

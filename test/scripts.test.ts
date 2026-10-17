@@ -1,52 +1,13 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { cp, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { cp, mkdir, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import test from 'node:test';
-import type { TestContext } from 'node:test';
 import { diagnostic, errorMessage, hasCode, parseSkillsLock, parseUpstream } from '../scripts/data.ts';
-import type { StageSkill } from '../scripts/data.ts';
 import { exists, fingerprint, json, options, readSkillsLock, safeName, skillHash, writeJson } from '../scripts/lib.ts';
 import { install, sources } from '../scripts/install.ts';
-import { updateSkills, upstreamSource } from '../scripts/update-skills.ts';
-
-async function fixture(t: TestContext) {
-  const base = await mkdtemp(path.join(tmpdir(), 'slop-test-'));
-  t.after(() => rm(base, { recursive: true, force: true }));
-  const repo = path.join(base, 'source repo');
-  const config = path.join(base, 'user config');
-  for (const kind of ['agents', 'skills', 'instructions']) await mkdir(path.join(repo, kind), { recursive: true });
-  await writeJson(path.join(repo, 'skills-lock.json'), { version: 1, skills: {} });
-  return { base, repo, config };
-}
-
-async function makeSkill(repo: string, name = 'demo', content = 'Original instructions') {
-  const directory = path.join(repo, 'skills', name);
-  await mkdir(directory, { recursive: true });
-  await writeFile(path.join(directory, 'SKILL.md'), `---\nname: ${name}\ndescription: A test skill\n---\n${content}\n`);
-  return directory;
-}
-
-async function tracked(repo: string, name = 'demo') {
-  const directory = await makeSkill(repo, name);
-  const lock = await readSkillsLock(path.join(repo, 'skills-lock.json'));
-  lock.skills[name] = { source: 'example/skills', sourceType: 'github', skillPath: `skills/${name}/SKILL.md`, computedHash: await skillHash(directory) };
-  await writeJson(path.join(repo, 'skills-lock.json'), lock);
-  return directory;
-}
-
-async function stageSkill({ source, name, workspace }: Parameters<StageSkill>[0]) {
-  const directory = path.join(workspace, 'staged', name);
-  await mkdir(path.dirname(directory), { recursive: true });
-  await cp(source, directory, { recursive: true });
-  return { directory };
-}
-
-async function upstream({ name, workspace }: Parameters<StageSkill>[0]) {
-  const directory = await makeSkill(workspace, name, 'Updated upstream instructions');
-  return { directory };
-}
+import { updateSkills } from '../scripts/update-skills.ts';
+import { fixture, makeSkill, stageSkill, tracked, upstream } from './fixtures.ts';
 
 test('project hash matches the upstream algorithm and ignores empty directories', async (t) => {
   const { repo } = await fixture(t);
@@ -283,25 +244,17 @@ test('skill frontmatter must match its directory', async (t) => {
   await assert.rejects(sources(repo), /must match/);
 });
 
-test('upstream source preserves folder and ref without switching hosts', () => {
-  assert.equal(upstreamSource({ sourceType: 'github', source: 'mattpocock/skills', skillPath: 'skills/productivity/grilling/SKILL.md', ref: 'main' }), 'mattpocock/skills/skills/productivity/grilling#main');
-  assert.equal(upstreamSource({ sourceType: 'git', source: 'https://example.com/skills.git', ref: 'v1' }), 'https://example.com/skills.git#v1');
-  assert.equal(upstreamSource({ sourceType: 'local', source: './skills' }), null);
-  assert.throws(() => upstreamSource({ sourceType: 'gitlab', source: 'owner/repo' }), /unambiguous/);
-  assert.throws(() => upstreamSource({ sourceType: 'github', source: 'owner/repo', skillPath: '../SKILL.md' }), /Invalid/);
-});
-
 test('upstream parsing separates validated remote sources from local provenance', () => {
   for (const sourceType of ['local', 'node_modules'] as const) {
     assert.deepEqual(parseUpstream({ sourceType, source: './skills', ref: 'unused' }), { kind: 'local' });
   }
   assert.deepEqual(parseUpstream({ sourceType: 'github', source: 'example/skills',
     skillPath: 'skills/demo/SKILL.md', ref: 'main' }),
-  { kind: 'remote', source: 'example/skills/skills/demo#main' });
+  { kind: 'remote', repository: 'https://github.com/example/skills.git', skillPath: 'skills/demo/SKILL.md', ref: 'main' });
   assert.deepEqual(parseUpstream({ sourceType: 'gitlab', source: 'https://gitlab.com/example/skills',
-    skillPath: 'demo/SKILL.md' }), { kind: 'remote', source: 'https://gitlab.com/example/skills/demo' });
+    skillPath: 'demo/SKILL.md' }), { kind: 'remote', repository: 'https://gitlab.com/example/skills', skillPath: 'demo/SKILL.md' });
   assert.deepEqual(parseUpstream({ sourceType: 'git', source: 'https://example.com/skills.git' }),
-    { kind: 'remote', source: 'https://example.com/skills.git' });
+    { kind: 'remote', repository: 'https://example.com/skills.git' });
   for (const source of ['', '--help', 'ambiguous']) {
     assert.throws(() => parseUpstream({ sourceType: 'git', source }));
   }
@@ -403,7 +356,7 @@ test('own skills without upstream are left unchanged', async (t) => {
   const { repo } = await fixture(t);
   await makeSkill(repo);
   const result = await updateSkills({ repo, fetchSkill: () => assert.fail('Must not fetch') });
-  assert.deepEqual(result, { updated: [], skipped: [], failures: [] });
+  assert.deepEqual(result, { updated: [], unchanged: ['demo'], skipped: [], failures: [] });
 });
 
 test('inherited lock properties are not treated as upstream entries', async (t) => {
@@ -411,7 +364,7 @@ test('inherited lock properties are not treated as upstream entries', async (t) 
   const directory = await makeSkill(repo, 'constructor');
   const before = await fingerprint(directory);
   const result = await updateSkills({ repo, fetchSkill: () => assert.fail('Must not fetch') });
-  assert.deepEqual(result, { updated: [], skipped: [], failures: [] });
+  assert.deepEqual(result, { updated: [], unchanged: ['constructor'], skipped: [], failures: [] });
   assert.equal(await fingerprint(directory), before);
 });
 
@@ -419,7 +372,7 @@ test('an own constructor lock entry can still update normally', async (t) => {
   const { repo } = await fixture(t);
   await tracked(repo, 'constructor');
   const result = await updateSkills({ repo, fetchSkill: upstream });
-  assert.deepEqual(result, { updated: ['constructor'], skipped: [], failures: [] });
+  assert.deepEqual(result, { updated: ['constructor'], unchanged: [], skipped: [], failures: [] });
 });
 
 test('unknown --skill is an error', async (t) => {

@@ -4,7 +4,9 @@ import path from 'node:path';
 import { diagnostic, errorMessage, isRecord } from './data.ts';
 import type { StageSkill } from './data.ts';
 import { copy, exists, fingerprint, isMain, json, noLinks, options, repository,
-  safeName, skillName, skillsAdd, temporary, warnPendingSkills, withMutex, writeJson } from './lib.ts';
+  safeName, skillName, temporary, warnPendingSkills, withMutex, writeJson } from './lib.ts';
+import { skillsAdd } from './skills-cli.ts';
+import { assertNoPendingUpdate } from './update-transaction.ts';
 
 export interface DeploymentManifest {
   version: 1;
@@ -164,6 +166,7 @@ export async function install({ repo = repository, config: override, uninstall =
   const state = path.join(config, '.slop');
   await noLinks(state);
   return withMutex(path.join(repo, '.slop', 'repository.lock'), () => withMutex(path.join(state, 'install.lock'), async () => {
+    await assertNoPendingUpdate(repo);
     await noLinks(path.join(state, 'manifest.json'));
     const previous = await readManifest(path.join(state, 'manifest.json'));
     if (!uninstall) await warnPendingSkills(repo);

@@ -1,16 +1,13 @@
-import { randomUUID } from 'node:crypto';
-import { mkdir, readdir, rename, rm } from 'node:fs/promises';
+import { readdir } from 'node:fs/promises';
 import path from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import { diagnostic, errorMessage, parseUpstream } from './data.ts';
-import type { StageSkill, UpstreamEntry } from './data.ts';
-import { copy, fingerprint, isMain, readSkillsLock, noLinks, options, repository,
-  safeName, skillHash, skillName, skillsAdd, temporary, warnPendingSkills, withMutex, writeJson } from './lib.ts';
-
-export function upstreamSource(entry: UpstreamEntry): string | null {
-  const upstream = parseUpstream(entry);
-  return upstream.kind === 'remote' ? upstream.source : null;
-}
+import type { SkillName, StageSkill } from './data.ts';
+import { fingerprint, isMain, readSkillsLock, noLinks, options, repository,
+  safeName, skillHash, skillName, temporary, warnPendingSkills, withMutex } from './lib.ts';
+import { skillsAdd, upstreamSource } from './skills-cli.ts';
+import { assertNoPendingUpdate, commitUpdate, UpdateRecoveryError } from './update-transaction.ts';
+import type { LockSnapshot } from './update-transaction.ts';
 
 async function confirm(name: string): Promise<boolean> {
   const input = createInterface({ input: process.stdin, output: process.stdout });
@@ -30,19 +27,74 @@ export type UpdateOptions = {
 
 export interface UpdateResult {
   updated: string[];
+  unchanged: string[];
   skipped: string[];
   failures: string[];
+}
+
+type SkillOutcome = { status: 'updated' | 'unchanged' | 'skipped'; snapshot: LockSnapshot };
+type SkillContext = {
+  repo: string;
+  interactive: boolean;
+  ask: (name: string) => Promise<boolean>;
+  fetchSkill: StageSkill;
+};
+
+async function updateSkill(name: SkillName, snapshot: LockSnapshot, context: SkillContext): Promise<SkillOutcome> {
+  const { repo, interactive, ask, fetchSkill } = context;
+  const current = path.join(repo, 'skills', name);
+  const lockFile = path.join(repo, 'skills-lock.json');
+  await noLinks(current);
+  if (await skillName(current) !== name) throw new Error('Directory and skill name differ');
+  const before = await fingerprint(current);
+  if (before === null) throw new Error('Skill disappeared during update');
+  const entry = Object.hasOwn(snapshot.lock.skills, name) ? snapshot.lock.skills[name] : undefined;
+  const upstream = entry ? parseUpstream(entry) : { kind: 'local' } as const;
+  if (!entry || upstream.kind === 'local') {
+    console.log(`${name}: no remote upstream; unchanged.`);
+    return { status: 'unchanged', snapshot };
+  }
+  const localHash = await skillHash(current);
+  if (localHash !== entry.computedHash) {
+    diagnostic({ level: 'warn', event: 'skill.modified', message: 'Contents differ from the skills-lock.json baseline.',
+      context: { repo, skill: name, lockFile } });
+    if (!interactive || !await ask(name)) {
+      console.log(`${name}: kept local version${interactive ? '' : ' (noninteractive run)'}.`);
+      return { status: 'skipped', snapshot };
+    }
+  }
+  return temporary('slop-update-', async (workspace) => {
+    const staged = await fetchSkill({ source: upstreamSource(upstream), name, workspace, skillPath: upstream.skillPath });
+    if (await skillName(staged.directory) !== name) throw new Error(`Upstream skill name changed: ${name}`);
+    await fingerprint(staged.directory); // Validate files excluded by the upstream hash too.
+    const upstreamHash = await skillHash(staged.directory);
+    if (await fingerprint(current) !== before) throw new Error('Changed while updating; retry after saving edits');
+    if (await fingerprint(lockFile) !== snapshot.fingerprint) throw new Error('skills-lock.json changed during update');
+    const changed = upstreamHash !== localHash;
+    // Build the candidate without mutating the last successfully published lock.
+    if (changed || upstreamHash !== entry.computedHash) {
+      const nextLock = { ...snapshot.lock,
+        skills: { ...snapshot.lock.skills, [name]: { ...entry, computedHash: upstreamHash } } };
+      snapshot = await commitUpdate({ repo, name, before, snapshot, nextLock,
+        ...changed && { replacement: staged.directory } });
+    }
+    console.log(`${name}: ${changed ? 'updated; previous copy saved under .slop/backups/.' : 'already up to date.'}`);
+    return { status: changed ? 'updated' : 'unchanged', snapshot };
+  });
 }
 
 export async function updateSkills({ repo = repository, only, interactive = Boolean(process.stdin.isTTY && process.stdout.isTTY),
   ask = confirm, fetchSkill = skillsAdd }: UpdateOptions = {}): Promise<UpdateResult> {
   const selected = only === undefined ? undefined : safeName(only);
   const lockFile = path.join(repo, 'skills-lock.json');
-  await noLinks(lockFile);
-  const result: UpdateResult = { updated: [], skipped: [], failures: [] };
+  const result: UpdateResult = { updated: [], unchanged: [], skipped: [], failures: [] };
   return withMutex(path.join(repo, '.slop', 'repository.lock'), async () => {
+    await assertNoPendingUpdate(repo);
+    await noLinks(lockFile);
+    const before = await fingerprint(lockFile);
     const lock = await readSkillsLock(lockFile);
-    let lockFingerprint = await fingerprint(lockFile);
+    if (before === null || await fingerprint(lockFile) !== before) throw new Error('skills-lock.json changed while reading');
+    let snapshot: LockSnapshot = { lock, fingerprint: before };
     await warnPendingSkills(repo);
     const directory = path.join(repo, 'skills');
     await noLinks(directory);
@@ -51,69 +103,19 @@ export async function updateSkills({ repo = repository, only, interactive = Bool
     if (selected && !names.includes(selected)) throw new Error(`Unknown skill: ${selected}`);
     for (const name of names.filter((name) => !selected || name === selected).sort()) {
       try {
-        const current = path.join(directory, name);
-        await noLinks(current);
-        if (await skillName(current) !== name) throw new Error('Directory and skill name differ');
-        const before = await fingerprint(current);
-        const entry = Object.hasOwn(lock.skills, name) ? lock.skills[name] : undefined;
-        if (!entry) { console.log(`${name}: repository-owned skill, no upstream recorded; unchanged.`); continue; }
-        const upstream = parseUpstream(entry);
-        if (upstream.kind === 'local') { console.log(`${name}: no remote upstream; unchanged.`); continue; }
-        const localHash = await skillHash(current);
-        const dirty = localHash !== entry.computedHash;
-        if (dirty) {
-          diagnostic({ level: 'warn', event: 'skill.modified', message: 'Contents differ from the skills-lock.json baseline.',
-            context: { repo, skill: name, lockFile } });
-          if (!interactive || !await ask(name)) {
-            result.skipped.push(name);
-            console.log(`${name}: kept local version${interactive ? '' : ' (noninteractive run)'}.`);
-            continue;
-          }
-        }
-        await temporary('slop-update-', async (workspace) => {
-          const staged = await fetchSkill({ source: upstream.source, name, workspace });
-          const upstreamHash = await skillHash(staged.directory);
-          // Recheck after network I/O or a prompt so a concurrent editor is not overwritten.
-          if (await fingerprint(current) !== before) throw new Error('Changed while updating; retry after saving edits');
-          if (await fingerprint(lockFile) !== lockFingerprint) throw new Error('skills-lock.json changed during update');
-          if (upstreamHash === localHash) {
-            if (dirty) {
-              lock.skills[name] = { ...entry, computedHash: upstreamHash };
-              await writeJson(lockFile, lock);
-              lockFingerprint = await fingerprint(lockFile);
-            }
-            console.log(`${name}: already up to date.`);
-            return;
-          }
-          const backup = path.join(repo, '.slop', 'backups', `${name}-${Date.now()}-${randomUUID()}`);
-          await noLinks(backup);
-          await mkdir(path.dirname(backup), { recursive: true });
-          await rename(current, backup);
-          const previousEntry = entry;
-          try {
-            await copy(staged.directory, current);
-            // Retain the original source/ref/path rather than staging/local provenance.
-            lock.skills[name] = { ...previousEntry, computedHash: upstreamHash };
-            await writeJson(lockFile, lock);
-          } catch (error) {
-            lock.skills[name] = previousEntry;
-            await rm(current, { recursive: true, force: true });
-            await rename(backup, current);
-            throw error;
-          }
-          lockFingerprint = await fingerprint(lockFile);
-          result.updated.push(name);
-          console.log(`${name}: updated. Previous copy saved to ${backup}`);
-        });
+        const outcome = await updateSkill(name, snapshot, { repo, interactive, ask, fetchSkill });
+        snapshot = outcome.snapshot;
+        result[outcome.status].push(name);
       } catch (error) {
-        result.failures.push(name);
         diagnostic({ level: 'error', event: 'skill.update.failed', message: errorMessage(error), context: { repo, skill: name, lockFile } });
+        if (error instanceof UpdateRecoveryError) throw error;
+        await assertNoPendingUpdate(repo);
+        result.failures.push(name);
       }
     }
-    console.log(`Skills: ${result.updated.length} updated, ${result.skipped.length} kept/skipped, ${result.failures.length} failed.`);
+    console.log(`Skills: ${result.updated.length} updated, ${result.unchanged.length} unchanged, ${result.skipped.length} kept/skipped, ${result.failures.length} failed.`);
     return result;
   });
-
 }
 
 if (isMain(import.meta.url)) {

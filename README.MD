@@ -73,6 +73,10 @@ This reads the original source, optional ref, and skill path from
 `skills-lock.json` and fetches through the pinned skills CLI. GitHub, GitLab,
 and unambiguous Git repository sources are supported. Repository-owned skills
 without a lock entry, local sources, and npm-installed sources are left alone.
+Repository URLs and refs are passed separately from the expected skill path:
+the CLI discovers skills from the repository root, and its recorded selection
+must match the original path before an update is accepted. A moved or ambiguous
+skill fails safely rather than updating from a different folder.
 
 Before updating, it recomputes the local folder hash using the CLI's project-lock
 algorithm. If it differs from the recorded `computedHash`, you choose **per skill**:
@@ -104,6 +108,8 @@ Without an interactive terminal, modified skills are skipped. Other clean skills
 still update. Skips or failures produce exit status 1 and a summary; successful
 updates already completed are retained. The existing customized `grilling` skill
 will initially trigger the local-change warning.
+The summary also counts unchanged skills, including repository-owned/local skills
+and remote skills that are already current.
 
 **Do not use bare `npx skills update` on this checkout:** it bypasses the wrapper's
 local-edit checks and targets the CLI's standard `.agents/skills` layout rather
@@ -152,6 +158,31 @@ remaining under `.agents/skills/`. To add an entirely original skill, create
   A stale `install.lock` or repository `.slop/repository.lock` blocks retries;
   remove it only after verifying no operation is running and inspecting recovery
   files. Keep the deployment manifest: deleting it loses ownership information.
+- Skill updates prepare replacements before moving live files and journal each
+  skill/baseline commit under `<repo>/.slop/update-transaction`. Normal errors roll
+  back both; failed rollback stops the run. A pending transaction blocks updates
+  and installation, including when an interrupted update left a skill missing.
+
+### Recover an interrupted skill update
+
+First verify no installer/updater is running. Inspect `.slop/update-transaction/`:
+
+- `journal.json` identifies the skill, original backup path, and commit phase.
+- `previous-lock.json` and `next-lock.json` record the baseline before/after.
+- `replacement/`, if present, contains the prepared new skill.
+
+For a `prepared` transaction, restore the original skill from the journal's
+backup path (if it was moved), and restore `skills-lock.json` from
+`previous-lock.json`. Preserve any partial/new content or newer editor changes
+outside the managed paths before restoring. For `committed`, verify the skill
+matches its new baseline and the lock matches `next-lock.json`; retain the backup.
+Only then remove `update-transaction` and any stale `repository.lock` and retry.
+If the journal is missing or incomplete, inspect the current skill, lock, and
+backups before proceeding: preparation or cleanup may have been interrupted.
+This journal supports manual recovery; it does not make multi-file updates
+power-loss atomic.
+
+### Uninstall
 
 Remove only managed, unchanged installations:
 
@@ -170,7 +201,8 @@ npm test
 ```
 
 Tests use temporary repositories/config directories, not your live installation.
-They include a real local CLI installation, hash compatibility, per-skill update
-choices, backups, conflict protection, pruning, and uninstall. GitHub Actions runs
+They include real local CLI installation/Git fetching, pinned URL-parser compatibility,
+hash compatibility, per-skill update choices, backups, conflict protection, pruning,
+uninstall, publication/rollback failures, and interrupted-update recovery. GitHub Actions runs
 type checks and the suite on Linux and Windows. Remote upstream access is required for real
 updates, but not for the test suite.
