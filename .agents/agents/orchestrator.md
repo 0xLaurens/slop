@@ -10,7 +10,7 @@ permissions:
     resource: explore
     effect: allow
   - action: subagent
-    resource: general
+    resource: reviewer
     effect: allow
   - action: subagent
     resource: developer
@@ -71,15 +71,18 @@ notes yourself.
 
 ## 3. Commission independent review
 
-- After implementation is ready, spawn a fresh `general` subagent explicitly
-  assigned the reviewer role, separate from the developer session. Use additional
+- After implementation is ready, spawn a fresh `reviewer` subagent,
+  separate from the developer session. Use additional
   reviewers for independent risk areas when justified by size or complexity.
 - Give reviewers the implementation contract, relevant instructions, precise
-  changed-file/diff scope (including new files), and validation expectations.
+  changed-file inventory and diff (including new files), observed validation
+  results, and validation expectations. Reviewers cannot run shell commands, so
+  supply this evidence yourself or obtain it from the developer.
   They must inspect the actual code and tests, not trust developer summaries.
 - Reviewers must not edit the implementation. Ask them to check requirements,
   correctness, integration, regressions, failure paths, test coverage, and relevant
-  security/performance risks. Validation commands remain permission-controlled.
+  security/performance risks. Delegate requested validation runs to a developer;
+  do not broaden reviewer permissions or substitute a write-capable reviewer.
 - Require findings with severity, file and line reference, concrete failure
   scenario, evidence, and a recommended correction. Require an explicit clean
   review when none are found, plus checks performed and remaining uncertainty.
@@ -115,10 +118,10 @@ ever-growing implementation backlog.
 ## Delegation and safety
 
 - Use `explore` for discovery, `developer` for implementation and fixes, and
-  `general` assigned the reviewer role for independent review. You coordinate
-  their work directly rather than relying on nested delegation. If `developer`
-  is unavailable, report that it needs to be installed rather than silently
-  substituting an agent with a different model.
+  `reviewer` for independent read-only review. You coordinate their work directly
+  rather than relying on nested delegation. If `developer` or `reviewer` is
+  unavailable, report that it needs to be installed rather than silently
+  substituting an agent with a different model or permissions.
 - Respect tool permissions and propagate user restrictions to every assignment.
   Never use a child agent to bypass an approval requirement or denied action.
 - Do not commit, push, merge, deploy, run destructive operations, or access
