@@ -1,8 +1,10 @@
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { cp, mkdir, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import test from 'node:test';
+import { fileURLToPath } from 'node:url';
 import { diagnostic, errorMessage, hasCode, parseSkillsLock, parseUpstream } from '../scripts/data.ts';
 import { exists, fingerprint, json, options, readSkillsLock, safeName, skillHash, writeJson } from '../scripts/lib.ts';
 import { install, sources } from '../scripts/install.ts';
@@ -32,6 +34,30 @@ test('hash includes nested paths and raw bytes with the CLI sorting order', asyn
     hash.update(file).update(await readFile(path.join(directory, file)));
   }
   assert.equal(await skillHash(directory), hash.digest('hex'));
+});
+
+test('deployment fingerprints preserve file bytes and distinguish missing files', async (t) => {
+  const { repo } = await fixture(t);
+  const file = path.join(repo, 'bytes.bin');
+  assert.equal(await fingerprint(file), null);
+  const bytes = Buffer.from([0, 255, 13, 10]);
+  await writeFile(file, bytes);
+  assert.equal(await fingerprint(file), createHash('sha256').update('file\0').update(bytes).digest('hex'));
+});
+
+test('upstream hashing skips metadata trees but deployment fingerprints include them', async (t) => {
+  const { repo } = await fixture(t);
+  const directory = await makeSkill(repo);
+  const hash = await skillHash(directory);
+  let previous = await fingerprint(directory);
+  for (const name of ['.git', 'node_modules']) {
+    await mkdir(path.join(directory, name, 'nested'), { recursive: true });
+    await writeFile(path.join(directory, name, 'nested', 'file'), 'Metadata');
+    assert.equal(await skillHash(directory), hash);
+    const current = await fingerprint(directory);
+    assert.notEqual(current, previous);
+    previous = current;
+  }
 });
 
 test('portable names reject traversal and Windows reserved names', () => {
@@ -81,6 +107,23 @@ test('CLI options distinguish strings and booleans and reject invalid arguments'
   assert.equal(options(definitions, []).config, undefined);
   assert.throws(() => options(definitions, ['--unknown']));
   assert.throws(() => options(definitions, ['--config']));
+});
+
+test('script help returns before install or update validation', async (t) => {
+  const { repo, config } = await fixture(t);
+  for (const [script, args, usage] of [
+    ['install.ts', ['--config-dir', config], 'npm run install:global'],
+    ['update-skills.ts', ['--skill', '../invalid'], 'npm run skills:update'],
+  ] as const) {
+    const result = spawnSync(process.execPath, [
+      fileURLToPath(new URL(`../scripts/${script}`, import.meta.url)), '--help', ...args,
+    ], { cwd: repo, encoding: 'utf8' });
+    assert.equal(result.status, 0, result.stderr);
+    assert.ok(result.stdout.startsWith(usage));
+    assert.equal(result.stderr, '');
+  }
+  assert.equal(await exists(path.join(config, '.slop')), false);
+  assert.equal(await exists(path.join(repo, '.slop')), false);
 });
 
 test('unknown thrown values and filesystem errors are narrowed safely', () => {

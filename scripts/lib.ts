@@ -80,8 +80,10 @@ async function entries(directory: string, relative = '', result: Entry[] = [], u
       if (upstream && ['.git', 'node_modules'].includes(entry.name)) continue;
       if (!upstream) result.push({ name, kind: 'directory' });
       await entries(directory, name, result, upstream);
-    } else if (entry.isFile()) result.push({ name, kind: 'file', bytes: await readFile(file) });
-    else throw new Error(`Unsupported file type: ${file}`);
+      continue;
+    }
+    if (!entry.isFile()) throw new Error(`Unsupported file type: ${file}`);
+    result.push({ name, kind: 'file', bytes: await readFile(file) });
   }
   return result;
 }
@@ -102,14 +104,13 @@ export async function fingerprint(target: string): Promise<string | null> {
   if (!await exists(target)) return null;
   const stat = await lstat(target);
   const hash = createHash('sha256');
-  if (stat.isFile()) hash.update('file\0').update(await readFile(target));
-  else if (stat.isDirectory()) {
-    hash.update('directory\0');
-    for (const entry of (await entries(target)).sort((a, b) => a.name.localeCompare(b.name))) {
-      hash.update(JSON.stringify([entry.name, entry.kind]));
-      if (entry.kind === 'file') hash.update(createHash('sha256').update(entry.bytes).digest());
-    }
-  } else throw new Error(`Unsupported file type: ${target}`);
+  if (stat.isFile()) return hash.update('file\0').update(await readFile(target)).digest('hex');
+  if (!stat.isDirectory()) throw new Error(`Unsupported file type: ${target}`);
+  hash.update('directory\0');
+  for (const entry of (await entries(target)).sort((a, b) => a.name.localeCompare(b.name))) {
+    hash.update(JSON.stringify([entry.name, entry.kind]));
+    if (entry.kind === 'file') hash.update(createHash('sha256').update(entry.bytes).digest());
+  }
   return hash.digest('hex');
 }
 

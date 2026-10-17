@@ -38,12 +38,11 @@ export const skillsAdd: StageSkill = async ({ source, name, workspace, skillPath
   const directory = path.join(cwd, '.agents', 'skills', name);
   if (await skillName(directory) !== name) throw new Error(`Upstream skill name changed: ${name}`);
   await fingerprint(directory);
-  if (skillPath !== undefined) {
-    const lock = await readSkillsLock(path.join(cwd, 'skills-lock.json'));
-    const selected = Object.hasOwn(lock.skills, name) ? lock.skills[name] : undefined;
-    if (selected?.skillPath !== skillPath) {
-      throw new Error(`Upstream skill path changed: expected ${skillPath}, received ${selected?.skillPath ?? 'no path'}`);
-    }
+  if (skillPath === undefined) return { directory };
+  const lock = await readSkillsLock(path.join(cwd, 'skills-lock.json'));
+  const selected = Object.hasOwn(lock.skills, name) ? lock.skills[name] : undefined;
+  if (selected?.skillPath !== skillPath) {
+    throw new Error(`Upstream skill path changed: expected ${skillPath}, received ${selected?.skillPath ?? 'no path'}`);
   }
   return { directory };
 };

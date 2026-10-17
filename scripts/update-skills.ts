@@ -55,13 +55,14 @@ async function updateSkill(name: SkillName, snapshot: LockSnapshot, context: Ski
     return { status: 'unchanged', snapshot };
   }
   const localHash = await skillHash(current);
-  if (localHash !== entry.computedHash) {
+  const modified = localHash !== entry.computedHash;
+  if (modified) {
     diagnostic({ level: 'warn', event: 'skill.modified', message: 'Contents differ from the skills-lock.json baseline.',
       context: { repo, skill: name, lockFile } });
-    if (!interactive || !await ask(name)) {
-      console.log(`${name}: kept local version${interactive ? '' : ' (noninteractive run)'}.`);
-      return { status: 'skipped', snapshot };
-    }
+  }
+  if (modified && (!interactive || !await ask(name))) {
+    console.log(`${name}: kept local version${interactive ? '' : ' (noninteractive run)'}.`);
+    return { status: 'skipped', snapshot };
   }
   return temporary('slop-update-', async (workspace) => {
     const staged = await fetchSkill({ source: upstreamSource(upstream), name, workspace, skillPath: upstream.skillPath });
@@ -117,14 +118,19 @@ export async function updateSkills({ repo = repository, only, interactive = Bool
   });
 }
 
+async function main(): Promise<void> {
+  const args = options({ skill: { type: 'string' }, 'non-interactive': { type: 'boolean' }, help: { type: 'boolean' } });
+  if (args.help) {
+    console.log('npm run skills:update -- [--skill NAME] [--non-interactive]\nModified skills require individual interactive confirmation; default is Keep.');
+    return;
+  }
+  const result = await updateSkills({ only: args.skill, interactive: !args['non-interactive'] && Boolean(process.stdin.isTTY && process.stdout.isTTY) });
+  if (result.skipped.length || result.failures.length) process.exitCode = 1;
+}
+
 if (isMain(import.meta.url)) {
   try {
-    const args = options({ skill: { type: 'string' }, 'non-interactive': { type: 'boolean' }, help: { type: 'boolean' } });
-    if (args.help) console.log('npm run skills:update -- [--skill NAME] [--non-interactive]\nModified skills require individual interactive confirmation; default is Keep.');
-    else {
-      const result = await updateSkills({ only: args.skill, interactive: !args['non-interactive'] && Boolean(process.stdin.isTTY && process.stdout.isTTY) });
-      if (result.skipped.length || result.failures.length) process.exitCode = 1;
-    }
+    await main();
   } catch (error) {
     diagnostic({ level: 'error', event: 'skills.update.failed', message: errorMessage(error), context: { repo: repository } });
     process.exitCode = 1;

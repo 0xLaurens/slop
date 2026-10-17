@@ -92,11 +92,11 @@ export function parseUpstream(entry: UpstreamEntry): Upstream {
       throw new Error('Upstream repository must be a repository root, not a tree or skill URL');
     }
   }
-  if (entry.skillPath !== undefined) {
-    if (entry.skillPath.includes('\\')
-        || entry.skillPath.split('/').some((part) => !part || part === '..' || part === '.')
-        || entry.skillPath.startsWith('/') || /[?#]/.test(entry.skillPath)
-        || !/(^|\/)SKILL\.md$/.test(entry.skillPath)) throw new Error('Invalid upstream skillPath');
+  if (entry.skillPath !== undefined && (entry.skillPath.includes('\\')
+      || entry.skillPath.split('/').some((part) => !part || part === '..' || part === '.')
+      || entry.skillPath.startsWith('/') || /[?#]/.test(entry.skillPath)
+      || !/(^|\/)SKILL\.md$/.test(entry.skillPath))) {
+    throw new Error('Invalid upstream skillPath');
   }
   if (entry.ref !== undefined && (!entry.ref || /[\s\x00-\x1f]/.test(entry.ref))) throw new Error('Invalid upstream ref');
   return { kind: 'remote', repository: source, ...entry.skillPath !== undefined && { skillPath: entry.skillPath },

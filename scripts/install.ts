@@ -70,10 +70,9 @@ export async function sources(repo: string): Promise<DeploymentSources> {
   }
   const instructions = path.join(repo, '.agents', 'instructions', 'AGENTS.md');
   await noLinks(instructions);
-  if (await exists(instructions)) {
-    if (!(await lstat(instructions)).isFile()) throw new Error('.agents/instructions/AGENTS.md must be a regular file');
-    result.set('AGENTS.md', { source: instructions });
-  }
+  if (!await exists(instructions)) return result;
+  if (!(await lstat(instructions)).isFile()) throw new Error('.agents/instructions/AGENTS.md must be a regular file');
+  result.set('AGENTS.md', { source: instructions });
   return result;
 }
 
@@ -124,10 +123,9 @@ async function deploy(config: string, desired: ReadonlyMap<string, DeploymentSou
         saved.push(target);
       }
       const entry = desired.get(target);
-      if (entry) {
-        installed.push(target);
-        await copy(entry.source, destination);
-      }
+      if (!entry) continue;
+      installed.push(target);
+      await copy(entry.source, destination);
     }
     const files: DeploymentManifest['files'] = {};
     for (const target of desired.keys()) {
@@ -153,6 +151,23 @@ async function deploy(config: string, desired: ReadonlyMap<string, DeploymentSou
   await rm(transaction, { recursive: true });
 }
 
+// CLI staging is intentionally not global: it avoids hard-coded CLI global
+// paths and keeps its bookkeeping separate from the actual target config.
+async function stageSources(desired: DeploymentSources, workspace: string, stageSkill: StageSkill): Promise<void> {
+  let index = 0;
+  for (const [target, entry] of desired) {
+    if (target.startsWith('skills/')) {
+      const staged = await stageSkill({ source: entry.source, name: safeName(target.slice(7)),
+        workspace: path.join(workspace, String(index++)) });
+      entry.source = staged.directory;
+      continue;
+    }
+    const staged = path.join(workspace, 'files', target);
+    await copy(entry.source, staged);
+    entry.source = staged;
+  }
+}
+
 export type InstallOptions = {
   repo?: string;
   config?: string;
@@ -172,20 +187,7 @@ export async function install({ repo = repository, config: override, uninstall =
     const desired: DeploymentSources = uninstall ? new Map() : await sources(repo);
     await preflight(config, desired, previous);
     return temporary('slop-install-', async (workspace) => {
-      // CLI staging is intentionally not global: it avoids hard-coded CLI global
-      // paths and keeps its bookkeeping separate from the actual target config.
-      let index = 0;
-      for (const [target, entry] of desired) {
-        if (target.startsWith('skills/')) {
-          const staged = await stageSkill({ source: entry.source, name: safeName(target.slice(7)),
-            workspace: path.join(workspace, String(index++)) });
-          entry.source = staged.directory;
-        } else {
-          const staged = path.join(workspace, 'files', target);
-          await copy(entry.source, staged);
-          entry.source = staged;
-        }
-      }
+      await stageSources(desired, workspace, stageSkill);
       await preflight(config, desired, previous);
       await deploy(config, desired, previous, state);
       console.log(`${uninstall ? 'Uninstalled managed files from' : 'Installed repository files into'} ${config}`);
@@ -193,11 +195,18 @@ export async function install({ repo = repository, config: override, uninstall =
   }));
 }
 
+async function main(): Promise<void> {
+  const args = options({ 'config-dir': { type: 'string' }, uninstall: { type: 'boolean' }, help: { type: 'boolean' } });
+  if (args.help) {
+    console.log('npm run install:global -- [--config-dir PATH] [--uninstall]\nConflicts abort before any installed files change.');
+    return;
+  }
+  await install({ config: args['config-dir'], uninstall: args.uninstall });
+}
+
 if (isMain(import.meta.url)) {
   try {
-    const args = options({ 'config-dir': { type: 'string' }, uninstall: { type: 'boolean' }, help: { type: 'boolean' } });
-    if (args.help) console.log('npm run install:global -- [--config-dir PATH] [--uninstall]\nConflicts abort before any installed files change.');
-    else await install({ config: args['config-dir'], uninstall: args.uninstall });
+    await main();
   } catch (error) {
     diagnostic({ level: 'error', event: 'install.failed', message: errorMessage(error), context: { repo: repository } });
     process.exitCode = 1;
