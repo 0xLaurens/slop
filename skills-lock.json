@@ -29,7 +29,7 @@
       "source": "cursor/plugins",
       "sourceType": "github",
       "skillPath": "harness/pstack/claude-code/skills/typescript-best-practices/SKILL.md",
-      "computedHash": "155a44ac5f8cc9254dfccf27e6c9c9c6dd964b25bf7cb299c8f9e9c53127efe1"
+      "computedHash": "2ef9e9307b23e38676b122330079a68315f87182e7fc308e263e3d2381090cb3"
     },
     "wayfinder": {
       "source": "mattpocock/skills",

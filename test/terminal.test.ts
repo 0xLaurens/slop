@@ -3,7 +3,7 @@ import { PassThrough } from 'node:stream';
 import { setImmediate } from 'node:timers/promises';
 import test from 'node:test';
 import type { TestContext } from 'node:test';
-import { Terminal } from '../scripts/terminal.ts';
+import { cleanText, Terminal } from '../scripts/terminal.ts';
 
 function terminal(t: TestContext) {
   let raw = false;
@@ -49,13 +49,9 @@ test('review defaults to cancellation and Escape backs out immediately', async (
   assert.equal(await escaped, false);
   const defaultCancel = ui.confirm('Delete?', ['DELETE first']);
   key('return');
-  await setImmediate();
-  key('return');
   assert.equal(await defaultCancel, false);
   const apply = ui.confirm('Delete?', ['DELETE first']);
-  key('return');
-  await setImmediate();
-  key('down'); key('return');
+  key('right'); key('return');
   assert.equal(await apply, true);
 });
 
@@ -80,4 +76,169 @@ test('progress cancellation requests a safe stop and terminal closes cleanly', (
   ui.close();
   assert.equal(raw(), false);
   assert.match(screen(), /\x1b\[\?1049l/);
+});
+
+test('search filters names; bulk actions affect matches only and preserve hidden selections', async (t) => {
+  const { ui, key, screen } = terminal(t);
+  const selected = ui.select('Skills', choices, ['first']);
+  key('/', '/'); key('s', 'second'); key('return');
+  assert.match(screen(), /1 selected · 1 outside filter/);
+  key('a'); key('return');
+  assert.deepEqual(await selected, ['first', 'second']);
+  const cleared = ui.select('Skills', choices, ['first', 'second']);
+  key('/', '/'); key('s', 'second'); key('return'); key('n'); key('return');
+  assert.deepEqual(await cleared, ['first']);
+});
+
+test('Escape clears search before leaving selection', async (t) => {
+  const { ui, key, screen } = terminal(t);
+  const selected = ui.select('Skills', choices);
+  key('/', '/'); key('x', 'missing');
+  assert.match(screen(), /No matches for/);
+  key('escape');
+  key('space'); key('return');
+  assert.deepEqual(await selected, ['first']);
+});
+
+test('selection state retains filter and focused row during review navigation', async (t) => {
+  const { ui, key } = terminal(t);
+  const state = {};
+  const first = ui.select('Skills', choices, [], true, { state });
+  key('/', '/'); key('s', 'second'); key('return'); key('space'); key('return');
+  const selection = await first;
+  assert.deepEqual(selection, ['second']);
+  const review = ui.confirm('Review', ['Install second'], 'Install selected skills');
+  key('escape'); assert.equal(await review, false);
+  const back = ui.select('Skills', choices, selection, true, { state });
+  key('space'); key('return');
+  assert.deepEqual(await back, []);
+  assert.deepEqual(state, { cursor: 'second', query: 'second' });
+});
+
+test('Home/End and page navigation work on grouped lists', async (t) => {
+  const { ui, key, screen } = terminal(t);
+  const many = Array.from({ length: 30 }, (_, index) => ({ value: String(index), label: `Skill ${index}`, group: index < 15 ? 'Skills' : 'Agents' }));
+  const selected = ui.select('Grouped', many);
+  key('end'); key('space');
+  assert.match(screen(), /of 30/);
+  key('home'); key('space'); key('pagedown'); key('pageup'); key('return');
+  assert.deepEqual(await selected, ['29', '0']);
+});
+
+test('live statuses and summaries update immediately when toggling', async (t) => {
+  const { ui, key, screen } = terminal(t);
+  const selected = ui.select('Install', [{ value: 'new', label: 'New skill', group: 'Skills', status: (checked) => checked ? 'Install' : 'No change' }], [], true,
+    { summary: (selection) => `${selection.size} install`, intro: ['Repository files will not be deleted.'] });
+  key('space');
+  assert.match(screen(), /New skill · Install/);
+  assert.match(screen(), /1 install/);
+  key('return'); await selected;
+});
+
+test('review keeps changes visible while selecting an action; arrows scroll rather than approving', async (t) => {
+  const { ui, key, screen } = terminal(t);
+  const review = ui.confirm('Review changes', ['Uninstall globally', '  tdd'], 'Apply installation changes');
+  key('right');
+  const frame = screen().split('\x1b[2J').at(-1) ?? '';
+  assert.match(frame, /Uninstall globally/);
+  assert.match(frame, /Apply installation changes/);
+  key('left'); key('down'); key('return');
+  assert.equal(await review, false);
+});
+
+test('input validation keeps the value and shows errors inline', async (t) => {
+  const { ui, key, screen } = terminal(t);
+  const text = ui.text('Skill name', { hint: 'Example: tdd', validate: (value) => { if (value !== 'tdd') throw new Error('Use tdd'); } });
+  key('x', 'bad'); key('return');
+  await setImmediate();
+  assert.match(screen(), /Use tdd/);
+  assert.match(screen(), /> bad/);
+  key('u', '', true); key('t', 'tdd'); key('return');
+  assert.equal(await text, 'tdd');
+});
+
+test('Tab completes paths and input state survives going back', async (t) => {
+  const { ui, key } = terminal(t);
+  const state: { value?: string } = {};
+  const text = ui.text('Path', { state, complete: async (value) => [`${value}/skill/`] });
+  key('p', './imports'); key('tab');
+  await setImmediate();
+  key('escape'); assert.equal(await text, undefined);
+  assert.equal(state.value, './imports/skill/');
+  const back = ui.text('Path', { state });
+  key('return'); assert.equal(await back, './imports/skill/');
+});
+
+test('late async validation cannot close a different screen', async (t) => {
+  const { ui, key } = terminal(t);
+  let finish: (() => void) | undefined;
+  const text = ui.text('Path', { validate: () => new Promise<void>((resolve) => { finish = resolve; }) });
+  key('p', 'path'); key('return'); key('escape');
+  assert.equal(await text, undefined);
+  const next = ui.select('Next', choices);
+  finish?.(); await setImmediate();
+  key('space'); key('return');
+  assert.deepEqual(await next, ['first']);
+});
+
+test('atomic progress does not advertise or accept cancellation', (t) => {
+  const { ui, key, screen } = terminal(t);
+  let cancelled = false;
+  ui.progress('Fetching', [], () => { cancelled = true; });
+  ui.progress('Committing', []);
+  key('escape');
+  assert.equal(cancelled, false);
+  const frame = screen().split('\x1b[2J').at(-1) ?? '';
+  assert.match(frame, /cancellation is unavailable/);
+  assert.match(frame, /Preparing/);
+});
+
+test('small terminals stay within viewport bounds and pages rewrap on resize', async (t) => {
+  const { ui, key, output, screen } = terminal(t);
+  output.columns = 40; output.rows = 12;
+  const page = ui.page('Long results', 'A fairly long explanation of the selected action. '.repeat(10));
+  key('end');
+  let frame = screen().split('\x1b[2J').at(-1) ?? '';
+  assert.ok(frame.split('\r\n').length <= 12);
+  assert.ok(frame.split('\r\n').every((line) => [...cleanText(line)].length < 40));
+  output.columns = 60; output.emit('resize');
+  key('home'); key('return');
+  assert.equal(await page, true);
+  frame = screen().split('\x1b[2J').at(-1) ?? '';
+  assert.match(frame, /explanation/);
+});
+
+test('details can be inspected without losing the current selection', async (t) => {
+  const { ui, key, screen } = terminal(t);
+  const selected = ui.select('Install', [{ value: 'skill', label: 'A skill', detail: 'Description\nSource path\nUpstream URL\nWarning' }]);
+  key('space'); key('d');
+  assert.match(screen(), /Upstream URL/);
+  key('return'); await setImmediate();
+  key('return');
+  assert.deepEqual(await selected, ['skill']);
+});
+
+test('bulk selection does not select missing sources that cannot be installed', async (t) => {
+  const { ui, key } = terminal(t);
+  const selected = ui.select('Install', [{ value: 'missing', label: 'Missing source', disabled: true }, ...choices]);
+  key('space'); key('a'); key('return');
+  assert.deepEqual(await selected, ['first', 'second']);
+});
+
+test('long details cannot hide the list position indicator', async (t) => {
+  const { ui, key, screen } = terminal(t);
+  const selected = ui.select('Install', [{ value: 'skill', label: 'Skill', detail: 'Long description '.repeat(30) + '\n/path\n/upstream\nwarning' }]);
+  const frame = screen().split('\x1b[2J').at(-1) ?? '';
+  assert.match(frame, /Showing 1–1 of 1/);
+  key('escape'); await selected;
+});
+
+test('keyboard help returns to the same selection', async (t) => {
+  const { ui, key, screen } = terminal(t);
+  const selected = ui.select('Skills', choices, ['first']);
+  key('?', '?');
+  assert.match(screen(), /Keyboard help/);
+  key('return'); await setImmediate();
+  key('return');
+  assert.deepEqual(await selected, ['first']);
 });

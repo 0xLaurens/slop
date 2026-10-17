@@ -136,9 +136,38 @@ export interface DeletionOptions {
   execute?: Run;
   log?: (message: string) => void;
   check?: () => void;
+  beginChanges?: () => void;
 }
 
-export async function deleteWithPullRequest({ repo, config, targets, expected, execute = run, log = () => {}, check = () => {} }: DeletionOptions): Promise<string> {
+export async function checkDeletionPrerequisites(repo: string, execute: Run = run) {
+  const git = (...args: string[]) => execute('git', args, repo);
+  const gh = (...args: string[]) => execute('gh', args, repo);
+  if (path.resolve(await git('rev-parse', '--show-toplevel')) !== path.resolve(repo)) throw new Error('Repository must be the Git working-tree root');
+  if (await git('status', '--porcelain', '--untracked-files=all')) throw new Error('Working tree is not clean. Commit or resolve your changes manually before deleting. Nothing changed.');
+  const startingBranch = await git('symbolic-ref', '--quiet', 'HEAD');
+  await git('var', 'GIT_AUTHOR_IDENT');
+  await git('var', 'GIT_COMMITTER_IDENT');
+  const remote = await git('remote', 'get-url', 'origin');
+  const match = remote.match(/^(?:git@github\.com:|https:\/\/github\.com\/|ssh:\/\/git@github\.com\/)([^/]+\/[^/]+?)(?:\.git)?$/);
+  if (!match?.[1]) throw new Error('Deletion PRs require a GitHub origin remote');
+  const repository = match[1];
+  await gh('auth', 'status', '--hostname', 'github.com');
+  const details: unknown = JSON.parse(await gh('repo', 'view', repository, '--json', 'defaultBranchRef,viewerPermission'));
+  if (typeof details !== 'object' || details === null || !('defaultBranchRef' in details) || !('viewerPermission' in details)) throw new Error('Cannot discover GitHub repository permissions');
+  const branchRef = details.defaultBranchRef;
+  if (typeof branchRef !== 'object' || branchRef === null || !('name' in branchRef) || typeof branchRef.name !== 'string') throw new Error('Cannot discover default branch');
+  if (!['ADMIN', 'MAINTAIN', 'WRITE'].includes(String(details.viewerPermission))) throw new Error('Push permission is required for deletion PRs');
+  const base = branchRef.name;
+  await git('fetch', 'origin', base);
+  const head = await git('rev-parse', 'HEAD');
+  const baseHead = await git('rev-parse', 'FETCH_HEAD');
+  if (head !== baseHead) throw new Error(`Start from the latest origin/${base} commit to avoid including unrelated commits in the deletion PR. Switch/update manually; nothing deleted.`);
+  const branch = `slop/delete-${randomUUID()}`;
+  await git('push', '--dry-run', 'origin', `HEAD:refs/heads/${branch}`);
+  return { startingBranch, repository, base, head, branch };
+}
+
+export async function deleteWithPullRequest({ repo, config, targets, expected, execute = run, log = () => {}, check = () => {}, beginChanges = () => {} }: DeletionOptions): Promise<string> {
   if (!targets.length) throw new Error('No deletion targets selected');
   return deploymentSession(repo, config, async (previous) => {
     if (expected) await assertInventory(repo, config, expected);
@@ -167,28 +196,7 @@ export async function deleteWithPullRequest({ repo, config, targets, expected, e
     if (await exists(path.join(config, '.slop', 'transaction'))) throw new Error('Interrupted deployment needs manual recovery before deletion');
     const git = (...args: string[]) => execute('git', args, repo);
     const gh = (...args: string[]) => execute('gh', args, repo);
-    if (path.resolve(await git('rev-parse', '--show-toplevel')) !== path.resolve(repo)) throw new Error('Repository must be the Git working-tree root');
-    if (await git('status', '--porcelain', '--untracked-files=all')) throw new Error('Working tree is not clean. Commit or resolve your changes manually before deleting. Nothing changed.');
-    const startingBranch = await git('symbolic-ref', '--quiet', 'HEAD');
-    await git('var', 'GIT_AUTHOR_IDENT');
-    await git('var', 'GIT_COMMITTER_IDENT');
-    const remote = await git('remote', 'get-url', 'origin');
-    const match = remote.match(/^(?:git@github\.com:|https:\/\/github\.com\/|ssh:\/\/git@github\.com\/)([^/]+\/[^/]+?)(?:\.git)?$/);
-    if (!match?.[1]) throw new Error('Deletion PRs require a GitHub origin remote');
-    const repository = match[1];
-    await gh('auth', 'status', '--hostname', 'github.com');
-    const details: unknown = JSON.parse(await gh('repo', 'view', repository, '--json', 'defaultBranchRef,viewerPermission'));
-    if (typeof details !== 'object' || details === null || !('defaultBranchRef' in details) || !('viewerPermission' in details)) throw new Error('Cannot discover GitHub repository permissions');
-    const branchRef = details.defaultBranchRef;
-    if (typeof branchRef !== 'object' || branchRef === null || !('name' in branchRef) || typeof branchRef.name !== 'string') throw new Error('Cannot discover default branch');
-    if (!['ADMIN', 'MAINTAIN', 'WRITE'].includes(String(details.viewerPermission))) throw new Error('Push permission is required for deletion PRs');
-    const base = branchRef.name;
-    await git('fetch', 'origin', base);
-    const head = await git('rev-parse', 'HEAD');
-    const baseHead = await git('rev-parse', 'FETCH_HEAD');
-    if (head !== baseHead) throw new Error(`Start from the latest origin/${base} commit to avoid including unrelated commits in the deletion PR. Switch/update manually; nothing deleted.`);
-    const branch = `slop/delete-${randomUUID()}`;
-    await git('push', '--dry-run', 'origin', `HEAD:refs/heads/${branch}`);
+    const { startingBranch, repository, base, head, branch } = await checkDeletionPrerequisites(repo, execute);
     for (const file of paths) if (!await git('ls-files', '--', file)) throw new Error(`Source is not tracked by Git: ${file}`);
     const lockFile = path.join(repo, 'skills-lock.json');
     await noLinks(lockFile);
@@ -204,12 +212,13 @@ export async function deleteWithPullRequest({ repo, config, targets, expected, e
     await preflight(config, desired, previous);
     await preflight(config, checked, previous);
     check();
+    beginChanges();
     await git('switch', '-c', branch);
     log(`Created branch ${branch}`);
     let uninstalled = false;
     let committed = false;
     let pushed = false;
-    const title = `chore(agents): delete ${unique.length} managed item${unique.length === 1 ? '' : 's'}`;
+    const title = `chore(agents): permanently delete ${unique.length} skill/agent source${unique.length === 1 ? '' : 's'}`;
     const body = `Remove repository sources and their skill lock entries.\n\n${unique.map((target) => `- ${target}`).join('\n')}\n\nManaged global copies were uninstalled locally. Unrelated files were preserved.`;
     try {
       await applyDeployment(config, desired, previous);

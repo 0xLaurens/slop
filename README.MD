@@ -51,16 +51,29 @@ skill/agent imports, global uninstall, and permanent source deletion. Existing
 script commands remain available for automation. No additional UI dependencies
 or build step are required.
 
-- **Arrow keys** navigate, **Space** toggles a checkbox, **Enter** continues,
-  and **Esc** goes back. **a** selects all; **n** deselects all.
+- The main menu distinguishes global installation, repository maintenance, and
+  permanent deletion. Descriptions explain each action's scope before you choose.
+- **Arrow keys** navigate, **Space** toggles a checkbox, **Enter** reviews changes,
+  and **Esc** goes back. **Page Up/Down** and **Home/End** navigate longer lists.
+  Skills, agents, and shared instructions have separate headings and short names.
+- **/** searches by name. Enter finishes editing the filter; Esc while editing
+  clears it. **a** selects all visible matches; **n** clears visible matches only.
+  Selections outside the filter are retained and counted. **d** opens full details
+  for the highlighted skill/agent, including its description and source. **?**
+  opens the complete keyboard help without losing your selections.
 - Installation checkboxes reflect managed copies actually present in the global
-  target. Selections are **not saved**. Uninstalled items start unchecked.
+  target. Selections are **not saved between workflows or sessions**. Uninstalled
+  skills/agents start unchecked. Pending actions (Keep, Install, Replace, Uninstall)
+  and live change counts update as you toggle.
   Deselecting an installed item proposes uninstalling it; shared instructions
   are selectable alongside skills and agents.
   To uninstall all managed global copies, press **n** in **Install / uninstall**,
-  then continue and review the removals.
-- Every change requires a review screen followed by explicit confirmation,
-  defaulting to Cancel. Review/results screens scroll with arrows or Page Up/Down.
+  with no search filter active, then continue and review the removals.
+- Review and confirmation share one screen: changes stay visible while you use
+  **Left/Right** or **Tab** to choose **Back to selection** or the action-specific
+  apply button. Enter confirms; the default is Back. Esc returns to selection
+  with the current choices, filter, and focused row intact. This is temporary
+  navigation state, not a saved installation preference.
 - Edited or unrelated global files block changes. The warning explains how to
   back up and resolve the conflict manually; there is no force-delete option.
 - Updates let you select remote-backed skills, with Keep/Replace choices for
@@ -68,16 +81,23 @@ or build step are required.
   repository URLs (or GitHub `owner/repository` plus an exact skill name), local
   skill folders, and local agent Markdown files. Existing names are never
   overwritten. Local-only skills have no upstream-update action.
+- Import prompts show examples, validate inline without losing your text, and
+  support **Tab** completion for local paths. Going back preserves previous input.
+  The review shows the resolved source and destination before adding files.
 - Imports and updates affect this repository only. Review `git diff`, then use
   **Install / uninstall** to explicitly deploy the desired skills, agents, and instructions.
 - Upstream CLI output is captured rather than repeatedly taking over the
-  terminal. Each operation records diagnostics under `.slop/logs/`; results
-  show the log path. Logs are local and ignored by Git; they may contain source
+  terminal. Animated progress names the current skill and shows counts. Results
+  explicitly distinguish Completed, Cancelled, Partially completed, and Failed;
+  **View full results** and **View diagnostics** provide optional detail.
+  Each operation records diagnostics under `.slop/logs/`. Logs are local and ignored by Git; they may contain source
   paths and upstream output, so review them before sharing.
 - During work, Esc/Ctrl+C requests cancellation at a safe boundary. Fetches
   finish before cancellation is checked; active file transactions are not
-  interrupted. Completed updates remain applied. Once permanent deletion
+  interrupted and explicitly show that cancellation is unavailable. Completed updates remain applied. Once permanent deletion
   begins, its uninstall/commit/PR sequence finishes or reports recovery steps.
+- Layout reflows on resize, and subtle colors supplement text labels. Set
+  `NO_COLOR=1` for uncolored output; no action relies on color alone.
 
 ### Permanently delete sources and open a PR
 
@@ -86,7 +106,8 @@ entries, and uninstalls their managed global copies **immediately**. It then
 creates one branch, commit, push, and PR for the entire selection. PR approval
 does not gate local removal. Shared instructions cannot be source-deleted here.
 
-Requirements are checked before deletion:
+Git/GitHub requirements are checked before selection and rechecked before deletion.
+Ownership, edited-file, and recovery checks still run before any file changes:
 
 - A clean Git working tree, with no uncommitted or untracked nonignored files.
 - HEAD at the latest origin default-branch commit, so unrelated branch commits

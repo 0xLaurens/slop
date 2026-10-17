@@ -27,7 +27,18 @@ export type UpdateOptions = {
   log?: (message: string) => void;
   cancelled?: () => boolean;
   report?: (value: Diagnostic) => void;
+  onTransaction?: (active: boolean) => void;
+  onProgress?: (progress: UpdateProgress) => void;
 };
+
+export interface UpdateProgress {
+  total: number;
+  completed: number;
+  updated: number;
+  unchanged: number;
+  skipped: number;
+  failed: number;
+}
 
 export interface UpdateResult {
   updated: string[];
@@ -45,10 +56,11 @@ type SkillContext = {
   log: (message: string) => void;
   report: (value: Diagnostic) => void;
   cancelled: () => boolean;
+  onTransaction: (active: boolean) => void;
 };
 
 async function updateSkill(name: SkillName, snapshot: LockSnapshot, context: SkillContext): Promise<SkillOutcome> {
-  const { repo, interactive, ask, fetchSkill, log, report, cancelled } = context;
+  const { repo, interactive, ask, fetchSkill, log, report, cancelled, onTransaction } = context;
   const current = path.join(repo, '.agents', 'skills', name);
   const lockFile = path.join(repo, 'skills-lock.json');
   await noLinks(current);
@@ -82,10 +94,14 @@ async function updateSkill(name: SkillName, snapshot: LockSnapshot, context: Ski
     const changed = upstreamHash !== localHash;
     // Build the candidate without mutating the last successfully published lock.
     if (changed || upstreamHash !== entry.computedHash) {
+      if (cancelled()) return { status: 'skipped', snapshot };
       const nextLock = { ...snapshot.lock,
         skills: { ...snapshot.lock.skills, [name]: { ...entry, computedHash: upstreamHash } } };
-      snapshot = await commitUpdate({ repo, name, before, snapshot, nextLock,
-        ...changed && { replacement: staged.directory } });
+      onTransaction(true);
+      try {
+        snapshot = await commitUpdate({ repo, name, before, snapshot, nextLock,
+          ...changed && { replacement: staged.directory } });
+      } finally { onTransaction(false); }
     }
     log(`${name}: ${changed ? 'updated; previous copy saved under .slop/backups/.' : 'already up to date.'}`);
     return { status: changed ? 'updated' : 'unchanged', snapshot };
@@ -93,7 +109,8 @@ async function updateSkill(name: SkillName, snapshot: LockSnapshot, context: Ski
 }
 
 export async function updateSkills({ repo = repository, only, interactive = Boolean(process.stdin.isTTY && process.stdout.isTTY),
-  ask = confirm, fetchSkill = skillsAdd, selected: selections, log = console.log, cancelled = () => false, report = diagnostic }: UpdateOptions = {}): Promise<UpdateResult> {
+  ask = confirm, fetchSkill = skillsAdd, selected: selections, log = console.log, cancelled = () => false,
+  report = diagnostic, onTransaction = () => {}, onProgress = () => {} }: UpdateOptions = {}): Promise<UpdateResult> {
   const selected = only === undefined ? undefined : safeName(only);
   const lockFile = path.join(repo, 'skills-lock.json');
   const result: UpdateResult = { updated: [], unchanged: [], skipped: [], failures: [] };
@@ -111,11 +128,15 @@ export async function updateSkills({ repo = repository, only, interactive = Bool
     if (selected && !names.includes(selected)) throw new Error(`Unknown skill: ${selected}`);
     const selection = selections?.map(safeName);
     for (const name of selection ?? []) if (!names.includes(name)) throw new Error(`Unknown skill: ${name}`);
-    for (const name of names.filter((name) => (!selected || name === selected) && (!selection || selection.includes(name))).sort()) {
-      if (cancelled()) { result.skipped.push(name); continue; }
+    const selectedNames = names.filter((name) => (!selected || name === selected) && (!selection || selection.includes(name))).sort();
+    const progress = () => onProgress({ total: selectedNames.length,
+      completed: result.updated.length + result.unchanged.length + result.skipped.length + result.failures.length,
+      updated: result.updated.length, unchanged: result.unchanged.length, skipped: result.skipped.length, failed: result.failures.length });
+    for (const name of selectedNames) {
+      if (cancelled()) { result.skipped.push(name); progress(); continue; }
       log(`Checking ${name}…`);
       try {
-        const outcome = await updateSkill(name, snapshot, { repo, interactive, ask, fetchSkill, log, report, cancelled });
+        const outcome = await updateSkill(name, snapshot, { repo, interactive, ask, fetchSkill, log, report, cancelled, onTransaction });
         snapshot = outcome.snapshot;
         result[outcome.status].push(name);
       } catch (error) {
@@ -124,6 +145,7 @@ export async function updateSkills({ repo = repository, only, interactive = Bool
         await assertNoPendingUpdate(repo);
         result.failures.push(name);
       }
+      progress();
     }
     log(`Skills: ${result.updated.length} updated, ${result.unchanged.length} unchanged, ${result.skipped.length} kept/skipped, ${result.failures.length} failed.`);
     return result;
