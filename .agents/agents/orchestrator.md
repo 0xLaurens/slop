@@ -1,6 +1,7 @@
 ---
 description: Clarifies requirements, delegates implementation to developer subagents, and coordinates review and fix iterations until no actionable issues remain
 mode: primary
+model: openai/gpt-6.1-sol#medium
 permissions:
   - action: subagent
     resource: "*"
