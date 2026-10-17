@@ -5,7 +5,9 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import type { TestContext } from 'node:test';
-import { exists, fingerprint, json, safeName, skillHash, writeJson } from '../scripts/lib.ts';
+import { diagnostic, errorMessage, hasCode, parseSkillsLock, parseUpstream } from '../scripts/data.ts';
+import type { StageSkill } from '../scripts/data.ts';
+import { exists, fingerprint, json, options, readSkillsLock, safeName, skillHash, writeJson } from '../scripts/lib.ts';
 import { install, sources } from '../scripts/install.ts';
 import { updateSkills, upstreamSource } from '../scripts/update-skills.ts';
 
@@ -28,20 +30,20 @@ async function makeSkill(repo: string, name = 'demo', content = 'Original instru
 
 async function tracked(repo: string, name = 'demo') {
   const directory = await makeSkill(repo, name);
-  const lock = await json(path.join(repo, 'skills-lock.json'));
+  const lock = await readSkillsLock(path.join(repo, 'skills-lock.json'));
   lock.skills[name] = { source: 'example/skills', sourceType: 'github', skillPath: `skills/${name}/SKILL.md`, computedHash: await skillHash(directory) };
   await writeJson(path.join(repo, 'skills-lock.json'), lock);
   return directory;
 }
 
-async function stageSkill(source: string, name: string, workspace: string) {
+async function stageSkill({ source, name, workspace }: Parameters<StageSkill>[0]) {
   const directory = path.join(workspace, 'staged', name);
   await mkdir(path.dirname(directory), { recursive: true });
   await cp(source, directory, { recursive: true });
   return { directory };
 }
 
-async function upstream(repo: string, name: string, workspace: string) {
+async function upstream({ name, workspace }: Parameters<StageSkill>[0]) {
   const directory = await makeSkill(workspace, name, 'Updated upstream instructions');
   return { directory };
 }
@@ -76,6 +78,58 @@ test('portable names reject traversal and Windows reserved names', () => {
     assert.throws(() => safeName(name));
   }
   assert.equal(safeName('my-skill_2'), 'my-skill_2');
+});
+
+test('JSON stays unknown until a skills lock is validated', async (t) => {
+  const { repo } = await fixture(t);
+  const file = path.join(repo, 'skills-lock.json');
+  await writeJson(file, null);
+  assert.equal(await json(file), null);
+  await assert.rejects(readSkillsLock(file), /Invalid skills-lock.json/);
+});
+
+test('skills lock validation rejects malformed documents and entries', () => {
+  const entry = { source: 'example/skills', sourceType: 'github', computedHash: 'a'.repeat(64) };
+  const invalidDocuments: unknown[] = [null, [], {}, { version: 2, skills: {} },
+    { version: 1, skills: [] }, { version: 1, skills: 'invalid' }];
+  for (const document of invalidDocuments) {
+    assert.throws(() => parseSkillsLock(document), /Invalid skills-lock.json/);
+  }
+  const invalidEntries: unknown[] = [null, [], 'invalid', {},
+    { ...entry, source: 42 }, { ...entry, source: '' },
+    { ...entry, sourceType: 'unsupported' }, { ...entry, computedHash: 'invalid' },
+    { ...entry, sourceUrl: 42 }, { ...entry, skillPath: [] }, { ...entry, ref: null }];
+  for (const invalid of invalidEntries) {
+    assert.throws(() => parseSkillsLock({ version: 1, skills: { demo: invalid } }), /Invalid skills-lock.json entry: demo/);
+  }
+});
+
+test('skills lock validation preserves additional provenance metadata', () => {
+  const document = { version: 1, metadata: { custom: true }, skills: {
+    demo: { source: 'example/skills', sourceType: 'github', computedHash: 'a'.repeat(64),
+      sourceUrl: 'https://github.com/example/skills', skillPath: 'SKILL.md', ref: 'main', custom: { retained: true } },
+  } };
+  assert.deepEqual(parseSkillsLock(document), document);
+});
+
+test('CLI options distinguish strings and booleans and reject invalid arguments', () => {
+  const definitions = { config: { type: 'string' }, uninstall: { type: 'boolean' } } as const;
+  const args = options(definitions, ['--config', '/config', '--uninstall']);
+  assert.equal(args.config, '/config');
+  assert.equal(args.uninstall, true);
+  assert.equal(options(definitions, []).config, undefined);
+  assert.throws(() => options(definitions, ['--unknown']));
+  assert.throws(() => options(definitions, ['--config']));
+});
+
+test('unknown thrown values and filesystem errors are narrowed safely', () => {
+  assert.equal(errorMessage(new Error('failure')), 'failure');
+  assert.equal(errorMessage('failure'), 'failure');
+  assert.equal(errorMessage(null), 'null');
+  assert.equal(hasCode(Object.assign(new Error('missing'), { code: 'ENOENT' }), 'ENOENT'), true);
+  for (const value of [null, undefined, 'ENOENT', {}, { code: 'EPERM' }]) {
+    assert.equal(hasCode(value, 'ENOENT'), false);
+  }
 });
 
 test('install all three types, update, prune, and preserve unrelated files', async (t) => {
@@ -205,6 +259,15 @@ test('malformed manifest is not silently reset', async (t) => {
   await assert.rejects(install({ repo, config }), SyntaxError);
 });
 
+test('manifest validation rejects non-object documents and file maps', async (t) => {
+  const { repo, config } = await fixture(t);
+  for (const manifest of [null, [], { version: 1, owner: 'slop', files: [] },
+    { version: 1, owner: 'slop', files: 'invalid' }, { version: 1, owner: 'slop', files: { 'AGENTS.md': null } }]) {
+    await writeJson(path.join(config, '.slop', 'manifest.json'), manifest);
+    await assert.rejects(install({ repo, config }), /Invalid deployment manifest/);
+  }
+});
+
 test('interrupted deployment refuses to discard recovery files', async (t) => {
   const { repo, config } = await fixture(t);
   await mkdir(path.join(config, '.slop', 'transaction'), { recursive: true });
@@ -228,13 +291,40 @@ test('upstream source preserves folder and ref without switching hosts', () => {
   assert.throws(() => upstreamSource({ sourceType: 'github', source: 'owner/repo', skillPath: '../SKILL.md' }), /Invalid/);
 });
 
+test('upstream parsing separates validated remote sources from local provenance', () => {
+  for (const sourceType of ['local', 'node_modules'] as const) {
+    assert.deepEqual(parseUpstream({ sourceType, source: './skills', ref: 'unused' }), { kind: 'local' });
+  }
+  assert.deepEqual(parseUpstream({ sourceType: 'github', source: 'example/skills',
+    skillPath: 'skills/demo/SKILL.md', ref: 'main' }),
+  { kind: 'remote', source: 'example/skills/skills/demo#main' });
+  assert.deepEqual(parseUpstream({ sourceType: 'gitlab', source: 'https://gitlab.com/example/skills',
+    skillPath: 'demo/SKILL.md' }), { kind: 'remote', source: 'https://gitlab.com/example/skills/demo' });
+  assert.deepEqual(parseUpstream({ sourceType: 'git', source: 'https://example.com/skills.git' }),
+    { kind: 'remote', source: 'https://example.com/skills.git' });
+  for (const source of ['', '--help', 'ambiguous']) {
+    assert.throws(() => parseUpstream({ sourceType: 'git', source }));
+  }
+});
+
+test('structured diagnostics retain event, message, and identifying context', (t) => {
+  const write = t.mock.method(process.stderr, 'write', () => true);
+  const value = { level: 'error', event: 'skill.update.failed', message: 'Network down',
+    context: { repo: '/repo', skill: 'demo' } } satisfies Parameters<typeof diagnostic>[0];
+  diagnostic(value);
+  assert.equal(write.mock.callCount(), 1);
+  assert.equal(write.mock.calls[0]?.arguments[0], `${JSON.stringify(value)}\n`);
+});
+
 test('clean skills update from upstream and advance only their baseline hash', async (t) => {
   const { repo } = await fixture(t);
   await tracked(repo);
-  const previous = (await json(path.join(repo, 'skills-lock.json'))).skills.demo;
+  const previous = (await readSkillsLock(path.join(repo, 'skills-lock.json'))).skills.demo;
+  assert.ok(previous);
   const result = await updateSkills({ repo, fetchSkill: upstream });
   assert.deepEqual(result.updated, ['demo']);
-  const entry = (await json(path.join(repo, 'skills-lock.json'))).skills.demo;
+  const entry = (await readSkillsLock(path.join(repo, 'skills-lock.json'))).skills.demo;
+  assert.ok(entry);
   assert.deepEqual({ ...entry, computedHash: previous.computedHash }, previous);
   assert.equal(entry.computedHash, await skillHash(path.join(repo, 'skills', 'demo')));
 });
@@ -271,7 +361,9 @@ test('per-skill Replace backs up customizations before updating', async (t) => {
   assert.deepEqual(result.updated, ['demo']);
   const backups = await readdir(path.join(repo, '.slop', 'backups'));
   assert.equal(backups.length, 1);
-  assert.equal(await fingerprint(path.join(repo, '.slop', 'backups', backups[0])), before);
+  const backup = backups[0];
+  assert.ok(backup);
+  assert.equal(await fingerprint(path.join(repo, '.slop', 'backups', backup)), before);
   assert.equal(await exists(path.join(directory, 'local.txt')), false);
 });
 
@@ -314,6 +406,22 @@ test('own skills without upstream are left unchanged', async (t) => {
   assert.deepEqual(result, { updated: [], skipped: [], failures: [] });
 });
 
+test('inherited lock properties are not treated as upstream entries', async (t) => {
+  const { repo } = await fixture(t);
+  const directory = await makeSkill(repo, 'constructor');
+  const before = await fingerprint(directory);
+  const result = await updateSkills({ repo, fetchSkill: () => assert.fail('Must not fetch') });
+  assert.deepEqual(result, { updated: [], skipped: [], failures: [] });
+  assert.equal(await fingerprint(directory), before);
+});
+
+test('an own constructor lock entry can still update normally', async (t) => {
+  const { repo } = await fixture(t);
+  await tracked(repo, 'constructor');
+  const result = await updateSkills({ repo, fetchSkill: upstream });
+  assert.deepEqual(result, { updated: ['constructor'], skipped: [], failures: [] });
+});
+
 test('unknown --skill is an error', async (t) => {
   const { repo } = await fixture(t);
   await assert.rejects(updateSkills({ repo, only: 'missing' }), /Unknown skill/);
@@ -334,7 +442,7 @@ test('symlinked deployment directory is rejected', async (t) => {
   await mkdir(external);
   await mkdir(config);
   try { await symlink(external, path.join(config, 'skills'), process.platform === 'win32' ? 'junction' : 'dir'); }
-  catch (error) { if (error.code === 'EPERM') return t.skip('Symlink permission unavailable'); throw error; }
+  catch (error) { if (hasCode(error, 'EPERM')) return t.skip('Symlink permission unavailable'); throw error; }
   await assert.rejects(install({ repo, config, stageSkill }), /Symlink/);
   assert.deepEqual(await readdir(external), []);
 });
@@ -345,6 +453,6 @@ test('repository symlinks are rejected rather than followed', async (t) => {
   const external = path.join(base, 'external.txt');
   await writeFile(external, 'External data');
   try { await symlink(external, path.join(directory, 'link.txt')); }
-  catch (error) { if (error.code === 'EPERM') return t.skip('Symlink permission unavailable'); throw error; }
+  catch (error) { if (hasCode(error, 'EPERM')) return t.skip('Symlink permission unavailable'); throw error; }
   await assert.rejects(skillHash(directory), /Symlink/);
 });

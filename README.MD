@@ -9,6 +9,8 @@ and Windows (PowerShell or Command Prompt). Treat WSL as a separate Linux setup.
 
 Scripts run TypeScript directly in Node using native type stripping—no build step,
 loader, or transpiler. Use only erasable TypeScript syntax; Node does not type-check.
+Run `npm run typecheck` for strict, no-emit checking of scripts and tests. JSON/YAML
+is validated at runtime before being used as typed application data.
 
 After cloning this repository:
 
@@ -163,11 +165,12 @@ Unrelated files, OpenCode settings, and repository sources are retained.
 ## Tests
 
 ```sh
+npm run typecheck
 npm test
 ```
 
 Tests use temporary repositories/config directories, not your live installation.
 They include a real local CLI installation, hash compatibility, per-skill update
 choices, backups, conflict protection, pruning, and uninstall. GitHub Actions runs
-the suite on Linux and Windows. Remote upstream access is required for real
+type checks and the suite on Linux and Windows. Remote upstream access is required for real
 updates, but not for the test suite.
