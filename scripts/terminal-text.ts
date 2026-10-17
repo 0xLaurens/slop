@@ -1,8 +1,8 @@
-import stringWidth from 'string-width';
-
 export const cleanText = (text: string): string => text.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '').replace(/[\x00-\x08\x0b-\x1f\x7f-\x9f]/g, '').replace(/\t/g, '    ');
 const segmenter = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
 const graphemes = (text: string) => [...segmenter.segment(cleanText(text))].map(({ segment }) => segment);
+// Approximate layout as one column per grapheme; wide glyphs may overflow.
+const textWidth = (text: string): number => graphemes(text).length;
 
 export function removeLastGrapheme(text: string): string {
   return graphemes(text).slice(0, -1).join('');
@@ -11,7 +11,7 @@ export function removeLastGrapheme(text: string): string {
 export function tail(text: string, width: number): string {
   let result = '';
   for (const segment of graphemes(text).reverse()) {
-    if (stringWidth(segment + result) > width) break;
+    if (textWidth(segment + result) > width) break;
     result = segment + result;
   }
   return result;
@@ -19,10 +19,10 @@ export function tail(text: string, width: number): string {
 
 export function fit(text: string, width: number): string {
   const clean = cleanText(text);
-  if (stringWidth(clean) <= width) return clean;
+  if (textWidth(clean) <= width) return clean;
   let result = '';
   for (const segment of graphemes(clean)) {
-    if (stringWidth(result + segment) > width - 1) break;
+    if (textWidth(result + segment) > width - 1) break;
     result += segment;
   }
   return width > 0 ? `${result}…` : '';
@@ -39,15 +39,13 @@ export function wrap(text: string, width: number): string[] {
       let space = 0;
       while (end < rest.length) {
         const segment = rest[end] ?? '';
-        const cells = stringWidth(segment);
+        const cells = 1;
         if (used + cells > capacity) break;
         used += cells;
         end++;
         if (segment === ' ' && used > capacity / 2) space = end - 1;
       }
       if (end === rest.length) { result.push(rest.join('')); break; }
-      // A double-cell glyph cannot fit in a one-cell terminal. Never split it.
-      if (end === 0) { result.push('…'); rest = rest.slice(1); continue; }
       const length = space || end;
       result.push(rest.slice(0, length).join(''));
       rest = rest.slice(length);

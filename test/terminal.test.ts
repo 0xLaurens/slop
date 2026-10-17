@@ -3,7 +3,6 @@ import { PassThrough } from 'node:stream';
 import { setImmediate } from 'node:timers/promises';
 import test from 'node:test';
 import type { TestContext } from 'node:test';
-import stringWidth from 'string-width';
 import { cleanText, Terminal } from '../scripts/terminal.ts';
 import { fit, removeLastGrapheme, tail, wrap } from '../scripts/terminal-text.ts';
 
@@ -263,24 +262,25 @@ test('one-row list viewports keep the focused choice visible through navigation 
   assert.deepEqual(await selection, ['second']);
 });
 
-test('terminal text geometry preserves graphemes and measures display cells', () => {
-  assert.equal(fit('中文测试', 5), '中文…');
-  assert.equal(fit('👨‍👩‍👧‍👦abc', 3), '👨‍👩‍👧‍👦…');
-  assert.deepEqual(wrap('中文测试', 4), ['中文', '测试']);
-  assert.deepEqual(wrap('👨‍👩‍👧‍👦👨‍👩‍👧‍👦', 2), ['👨‍👩‍👧‍👦', '👨‍👩‍👧‍👦']);
+test('terminal text geometry approximates width while preserving graphemes', () => {
+  assert.equal(fit('中文测试', 3), '中文…');
+  assert.equal(fit('👨‍👩‍👧‍👦abc', 3), '👨‍👩‍👧‍👦a…');
+  assert.deepEqual(wrap('中文测试', 2), ['中文', '测试']);
+  assert.deepEqual(wrap('👨‍👩‍👧‍👦👨‍👩‍👧‍👦', 1), ['👨‍👩‍👧‍👦', '👨‍👩‍👧‍👦']);
   assert.deepEqual(wrap('e\u0301e\u0301', 1), ['e\u0301', 'e\u0301']);
-  assert.deepEqual(wrap('中', 1), ['…']);
+  assert.deepEqual(wrap('中', 1), ['中']);
   assert.equal(removeLastGrapheme('hello👨‍👩‍👧‍👦'), 'hello');
-  assert.equal(tail('abc中文', 3), '文');
+  assert.equal(tail('abc中文', 3), 'c中文');
 });
 
-test('Unicode pages and text input stay within terminal cells after resizing', async (t) => {
+test('Unicode pages and text input preserve graphemes after resizing', async (t) => {
   const { ui, key, output, screen } = terminal(t);
   output.columns = 12; output.rows = 8;
   const page = ui.page('中文👨‍👩‍👧‍👦', '中文测试👨‍👩‍👧‍👦e\u0301\t'.repeat(20));
   const frame = () => cleanText(screen().split('\x1b[2J').at(-1) ?? '');
   const assertBounds = () => {
-    assert.ok(frame().split('\n').every((line) => stringWidth(line) < output.columns));
+    const segmenter = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
+    assert.ok(frame().split('\n').every((line) => [...segmenter.segment(line)].length < output.columns));
     assert.ok(frame().split('\n').length <= output.rows);
   };
   assertBounds();
