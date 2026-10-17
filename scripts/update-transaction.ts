@@ -36,7 +36,7 @@ type CommitUpdate = {
 export async function commitUpdate({ repo, name, before, snapshot, nextLock, replacement }: CommitUpdate): Promise<LockSnapshot> {
   await assertNoPendingUpdate(repo);
   const transaction = path.join(repo, '.slop', 'update-transaction');
-  const current = path.join(repo, 'skills', name);
+  const current = path.join(repo, '.agents', 'skills', name);
   const lockFile = path.join(repo, 'skills-lock.json');
   const prepared = path.join(transaction, 'replacement');
   const oldLock = path.join(transaction, 'previous-lock.json');

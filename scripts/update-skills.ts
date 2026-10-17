@@ -4,7 +4,7 @@ import { createInterface } from 'node:readline/promises';
 import { diagnostic, errorMessage, parseUpstream } from './data.ts';
 import type { SkillName, StageSkill } from './data.ts';
 import { fingerprint, isMain, readSkillsLock, noLinks, options, repository,
-  safeName, skillHash, skillName, temporary, warnPendingSkills, withMutex } from './lib.ts';
+  safeName, skillHash, skillName, temporary, withMutex } from './lib.ts';
 import { skillsAdd, upstreamSource } from './skills-cli.ts';
 import { assertNoPendingUpdate, commitUpdate, UpdateRecoveryError } from './update-transaction.ts';
 import type { LockSnapshot } from './update-transaction.ts';
@@ -42,7 +42,7 @@ type SkillContext = {
 
 async function updateSkill(name: SkillName, snapshot: LockSnapshot, context: SkillContext): Promise<SkillOutcome> {
   const { repo, interactive, ask, fetchSkill } = context;
-  const current = path.join(repo, 'skills', name);
+  const current = path.join(repo, '.agents', 'skills', name);
   const lockFile = path.join(repo, 'skills-lock.json');
   await noLinks(current);
   if (await skillName(current) !== name) throw new Error('Directory and skill name differ');
@@ -95,8 +95,7 @@ export async function updateSkills({ repo = repository, only, interactive = Bool
     const lock = await readSkillsLock(lockFile);
     if (before === null || await fingerprint(lockFile) !== before) throw new Error('skills-lock.json changed while reading');
     let snapshot: LockSnapshot = { lock, fingerprint: before };
-    await warnPendingSkills(repo);
-    const directory = path.join(repo, 'skills');
+    const directory = path.join(repo, '.agents', 'skills');
     await noLinks(directory);
     const names = (await readdir(directory, { withFileTypes: true }))
       .filter((entry) => entry.name !== '.gitkeep').map((entry) => safeName(entry.name));

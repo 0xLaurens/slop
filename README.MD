@@ -42,9 +42,9 @@ also useful for testing against a temporary directory.
 ## Repository layout
 
 ```text
-agents/<name>.md              → <config>/agents/<name>.md
-skills/<name>/SKILL.md        → <config>/skills/<name>/SKILL.md
-instructions/AGENTS.md       → <config>/AGENTS.md
+.agents/agents/<name>.md      → <config>/agents/<name>.md
+.agents/skills/<name>/SKILL.md → <config>/skills/<name>/SKILL.md
+.agents/instructions/AGENTS.md → <config>/AGENTS.md
 skills-lock.json                original skill sources and upstream hashes
 scripts/install.ts              installation and removal
 scripts/update-skills.ts        upstream updates with local-change checks
@@ -111,9 +111,9 @@ will initially trigger the local-change warning.
 The summary also counts unchanged skills, including repository-owned/local skills
 and remote skills that are already current.
 
-**Do not use bare `npx skills update` on this checkout:** it bypasses the wrapper's
-local-edit checks and targets the CLI's standard `.agents/skills` layout rather
-than this repository's `skills/` sources. The pinned CLI's `check` command is
+**Do not use bare `npx skills update` on this checkout:** although it targets the
+same `.agents/skills/` directory, it bypasses the wrapper's local-edit checks and
+backups. The pinned CLI's `check` command is
 also an update alias, not a read-only check.
 
 ### Add a third-party skill using the CLI
@@ -124,23 +124,11 @@ From this repository, use the pinned executable via npm:
 npm exec -- skills add owner/repository --skill skill-name --agent opencode --copy --yes
 ```
 
-The CLI writes its provenance to `skills-lock.json` and initially places the
-skill under `.agents/skills/skill-name`. **Move that entire folder to
-`skills/skill-name`**, then commit it alongside the lockfile. For example:
-
-```sh
-# Linux
-mv .agents/skills/skill-name skills/skill-name
-```
-
-```powershell
-# Windows PowerShell
-Move-Item .agents/skills/skill-name skills/skill-name
-```
-
-The wrapper manages `skills/` only; it does not move or modify other files
-remaining under `.agents/skills/`. To add an entirely original skill, create
-`skills/<name>/SKILL.md` directly; it needs no upstream lock entry.
+The CLI writes its provenance to the root `skills-lock.json` and places the
+skill under `.agents/skills/skill-name`, the same directory the installer and
+updater manage. Commit that folder alongside the lockfile—no move is needed.
+To add an entirely original skill, create `.agents/skills/<name>/SKILL.md`
+directly; it needs no upstream lock entry.
 
 ## Installation safety and removal
 

@@ -93,19 +93,36 @@ test('unknown thrown values and filesystem errors are narrowed safely', () => {
   }
 });
 
+test('only .agents sources are managed; flattened legacy folders are ignored', async (t) => {
+  const { repo, config } = await fixture(t);
+  await makeSkill(repo);
+  for (const kind of ['agents', 'skills', 'instructions']) await mkdir(path.join(repo, kind));
+  await writeFile(path.join(repo, 'agents', 'legacy.md'), 'Legacy agent');
+  await writeFile(path.join(repo, 'instructions', 'AGENTS.md'), 'Legacy instructions');
+  await writeFile(path.join(repo, 'skills', 'unmanaged.txt'), 'Leave alone');
+  assert.deepEqual([...(await sources(repo)).keys()], ['skills/demo']);
+  await install({ repo, config, stageSkill });
+  assert.equal(await exists(path.join(config, 'skills', 'demo', 'SKILL.md')), true);
+  assert.equal(await exists(path.join(config, 'agents', 'legacy.md')), false);
+  assert.equal(await exists(path.join(config, 'AGENTS.md')), false);
+  const result = await updateSkills({ repo, fetchSkill: () => assert.fail('Must not fetch') });
+  assert.deepEqual(result.unchanged, ['demo']);
+  assert.equal(await readFile(path.join(repo, 'skills', 'unmanaged.txt'), 'utf8'), 'Leave alone');
+});
+
 test('install all three types, update, prune, and preserve unrelated files', async (t) => {
   const { repo, config } = await fixture(t);
   await makeSkill(repo);
-  await writeFile(path.join(repo, 'agents', 'review.md'), 'Review agent');
-  await writeFile(path.join(repo, 'instructions', 'AGENTS.md'), 'Shared instructions');
+  await writeFile(path.join(repo, '.agents', 'agents', 'review.md'), 'Review agent');
+  await writeFile(path.join(repo, '.agents', 'instructions', 'AGENTS.md'), 'Shared instructions');
   await mkdir(path.join(config, 'agents'), { recursive: true });
   await writeFile(path.join(config, 'agents', 'unrelated.md'), 'Do not touch');
   await install({ repo, config, stageSkill });
   assert.equal(await readFile(path.join(config, 'AGENTS.md'), 'utf8'), 'Shared instructions');
   assert.equal(await readFile(path.join(config, 'agents', 'review.md'), 'utf8'), 'Review agent');
-  assert.equal(await fingerprint(path.join(config, 'skills', 'demo')), await fingerprint(path.join(repo, 'skills', 'demo')));
-  await writeFile(path.join(repo, 'agents', 'review.md'), 'New agent');
-  await rm(path.join(repo, 'skills', 'demo'), { recursive: true });
+  assert.equal(await fingerprint(path.join(config, 'skills', 'demo')), await fingerprint(path.join(repo, '.agents', 'skills', 'demo')));
+  await writeFile(path.join(repo, '.agents', 'agents', 'review.md'), 'New agent');
+  await rm(path.join(repo, '.agents', 'skills', 'demo'), { recursive: true });
   await install({ repo, config, stageSkill });
   assert.equal(await exists(path.join(config, 'skills', 'demo')), false);
   assert.equal(await readFile(path.join(config, 'agents', 'review.md'), 'utf8'), 'New agent');
@@ -119,7 +136,7 @@ test('install all three types, update, prune, and preserve unrelated files', asy
 test('unrelated global instructions abort before skills CLI staging', async (t) => {
   const { repo, config } = await fixture(t);
   await makeSkill(repo);
-  await writeFile(path.join(repo, 'instructions', 'AGENTS.md'), 'Repo instructions');
+  await writeFile(path.join(repo, '.agents', 'instructions', 'AGENTS.md'), 'Repo instructions');
   await mkdir(config);
   await writeFile(path.join(config, 'AGENTS.md'), 'Existing instructions');
   await assert.rejects(install({ repo, config, stageSkill: () => assert.fail('Must not stage') }), /unrelated/);
@@ -138,10 +155,10 @@ test('unrelated skill directory is not adopted even if its contents match', asyn
 test('edited installed file blocks every update and uninstall', async (t) => {
   const { repo, config } = await fixture(t);
   await makeSkill(repo);
-  await writeFile(path.join(repo, 'agents', 'review.md'), 'Original agent');
+  await writeFile(path.join(repo, '.agents', 'agents', 'review.md'), 'Original agent');
   await install({ repo, config, stageSkill });
   await writeFile(path.join(config, 'skills', 'demo', 'local.txt'), 'User edit');
-  await writeFile(path.join(repo, 'agents', 'review.md'), 'New agent');
+  await writeFile(path.join(repo, '.agents', 'agents', 'review.md'), 'New agent');
   await assert.rejects(install({ repo, config, stageSkill }), /edited/);
   await assert.rejects(install({ repo, config, uninstall: true }), /edited/);
   assert.equal(await readFile(path.join(config, 'agents', 'review.md'), 'utf8'), 'Original agent');
@@ -149,9 +166,9 @@ test('edited installed file blocks every update and uninstall', async (t) => {
 
 test('edited stale files are preserved rather than pruned', async (t) => {
   const { repo, config } = await fixture(t);
-  await writeFile(path.join(repo, 'agents', 'review.md'), 'Original agent');
+  await writeFile(path.join(repo, '.agents', 'agents', 'review.md'), 'Original agent');
   await install({ repo, config, stageSkill });
-  await rm(path.join(repo, 'agents', 'review.md'));
+  await rm(path.join(repo, '.agents', 'agents', 'review.md'));
   await writeFile(path.join(config, 'agents', 'review.md'), 'User edit');
   await assert.rejects(install({ repo, config, stageSkill }), /edited/);
   assert.equal(await readFile(path.join(config, 'agents', 'review.md'), 'utf8'), 'User edit');
@@ -180,11 +197,11 @@ test('second preflight catches edits during staging', async (t) => {
 test('deployment failure restores earlier files and the previous manifest', async (t) => {
   const { repo, config, base } = await fixture(t);
   await makeSkill(repo);
-  await writeFile(path.join(repo, 'agents', 'review.md'), 'Original agent');
+  await writeFile(path.join(repo, '.agents', 'agents', 'review.md'), 'Original agent');
   await install({ repo, config, stageSkill });
   const manifest = await readFile(path.join(config, '.slop', 'manifest.json'), 'utf8');
   const skillBefore = await fingerprint(path.join(config, 'skills', 'demo'));
-  await writeFile(path.join(repo, 'agents', 'review.md'), 'Updated agent');
+  await writeFile(path.join(repo, '.agents', 'agents', 'review.md'), 'Updated agent');
   await assert.rejects(install({ repo, config, stageSkill: async () => ({ directory: path.join(base, 'missing-staged-directory') }) }), /ENOENT/);
   assert.equal(await readFile(path.join(config, 'agents', 'review.md'), 'utf8'), 'Original agent');
   assert.equal(await fingerprint(path.join(config, 'skills', 'demo')), skillBefore);
@@ -201,7 +218,7 @@ test('repository mutex prevents concurrent update/install operations', async (t)
 
 test('global instructions must be a regular file', async (t) => {
   const { repo } = await fixture(t);
-  await mkdir(path.join(repo, 'instructions', 'AGENTS.md'));
+  await mkdir(path.join(repo, '.agents', 'instructions', 'AGENTS.md'));
   await assert.rejects(sources(repo), /regular file/);
 });
 
@@ -279,7 +296,7 @@ test('clean skills update from upstream and advance only their baseline hash', a
   const entry = (await readSkillsLock(path.join(repo, 'skills-lock.json'))).skills.demo;
   assert.ok(entry);
   assert.deepEqual({ ...entry, computedHash: previous.computedHash }, previous);
-  assert.equal(entry.computedHash, await skillHash(path.join(repo, 'skills', 'demo')));
+  assert.equal(entry.computedHash, await skillHash(path.join(repo, '.agents', 'skills', 'demo')));
 });
 
 test('noninteractive dirty skills are skipped without fetching or changing baseline', async (t) => {

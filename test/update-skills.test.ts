@@ -229,7 +229,7 @@ test('unchanged results include repository-owned, local-source, and up-to-date s
     assert.equal(source, 'https://github.com/example/skills.git');
     assert.equal(skillPath, 'skills/current/SKILL.md');
     const directory = path.join(workspace, name);
-    await fs.cp(path.join(repo, 'skills', name), directory, { recursive: true });
+    await fs.cp(path.join(repo, '.agents', 'skills', name), directory, { recursive: true });
     return { directory };
   } });
   assert.deepEqual(result, { updated: [], unchanged: ['current', 'local', 'owned'], skipped: [], failures: [] });

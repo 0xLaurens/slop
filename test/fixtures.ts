@@ -10,13 +10,13 @@ export async function fixture(t: TestContext) {
   t.after(() => rm(base, { recursive: true, force: true }));
   const repo = path.join(base, 'source repo');
   const config = path.join(base, 'user config');
-  for (const kind of ['agents', 'skills', 'instructions']) await mkdir(path.join(repo, kind), { recursive: true });
+  for (const kind of ['agents', 'skills', 'instructions']) await mkdir(path.join(repo, '.agents', kind), { recursive: true });
   await writeJson(path.join(repo, 'skills-lock.json'), { version: 1, skills: {} });
   return { base, repo, config };
 }
 
 export async function makeSkill(repo: string, name = 'demo', content = 'Original instructions') {
-  const directory = path.join(repo, 'skills', name);
+  const directory = path.join(repo, '.agents', 'skills', name);
   await mkdir(directory, { recursive: true });
   await writeFile(path.join(directory, 'SKILL.md'), `---\nname: ${name}\ndescription: A test skill\n---\n${content}\n`);
   return directory;

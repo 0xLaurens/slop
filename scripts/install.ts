@@ -4,7 +4,7 @@ import path from 'node:path';
 import { diagnostic, errorMessage, isRecord } from './data.ts';
 import type { StageSkill } from './data.ts';
 import { copy, exists, fingerprint, isMain, json, noLinks, options, repository,
-  safeName, skillName, temporary, warnPendingSkills, withMutex, writeJson } from './lib.ts';
+  safeName, skillName, temporary, withMutex, writeJson } from './lib.ts';
 import { skillsAdd } from './skills-cli.ts';
 import { assertNoPendingUpdate } from './update-transaction.ts';
 
@@ -49,7 +49,7 @@ function validTarget(target: string): boolean {
 export async function sources(repo: string): Promise<DeploymentSources> {
   const result: DeploymentSources = new Map();
   for (const kind of ['agents', 'skills']) {
-    const directory = path.join(repo, kind);
+    const directory = path.join(repo, '.agents', kind);
     await noLinks(directory);
     if (!await exists(directory)) continue;
     for (const entry of await readdir(directory, { withFileTypes: true })) {
@@ -57,10 +57,10 @@ export async function sources(repo: string): Promise<DeploymentSources> {
       const source = path.join(directory, entry.name);
       await noLinks(source);
       if (kind === 'agents') {
-        if (!entry.isFile() || !entry.name.endsWith('.md')) throw new Error(`Expected agents/<name>.md: ${source}`);
+        if (!entry.isFile() || !entry.name.endsWith('.md')) throw new Error(`Expected .agents/agents/<name>.md: ${source}`);
         safeName(entry.name.slice(0, -3));
       } else {
-        if (!entry.isDirectory()) throw new Error(`Expected skills/<name>/SKILL.md: ${source}`);
+        if (!entry.isDirectory()) throw new Error(`Expected .agents/skills/<name>/SKILL.md: ${source}`);
         if (await skillName(source) !== entry.name) throw new Error(`Skill directory must match its frontmatter name: ${source}`);
       }
       const target = `${kind}/${entry.name}`;
@@ -68,10 +68,10 @@ export async function sources(repo: string): Promise<DeploymentSources> {
       result.set(target, { source });
     }
   }
-  const instructions = path.join(repo, 'instructions', 'AGENTS.md');
+  const instructions = path.join(repo, '.agents', 'instructions', 'AGENTS.md');
   await noLinks(instructions);
   if (await exists(instructions)) {
-    if (!(await lstat(instructions)).isFile()) throw new Error('instructions/AGENTS.md must be a regular file');
+    if (!(await lstat(instructions)).isFile()) throw new Error('.agents/instructions/AGENTS.md must be a regular file');
     result.set('AGENTS.md', { source: instructions });
   }
   return result;
@@ -169,7 +169,6 @@ export async function install({ repo = repository, config: override, uninstall =
     await assertNoPendingUpdate(repo);
     await noLinks(path.join(state, 'manifest.json'));
     const previous = await readManifest(path.join(state, 'manifest.json'));
-    if (!uninstall) await warnPendingSkills(repo);
     const desired: DeploymentSources = uninstall ? new Map() : await sources(repo);
     await preflight(config, desired, previous);
     return temporary('slop-install-', async (workspace) => {

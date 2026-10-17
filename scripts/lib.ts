@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import type { ParseArgsOptionsConfig } from 'node:util';
 import { parse } from 'yaml';
-import { diagnostic, hasCode, isRecord, parseSkillsLock } from './data.ts';
+import { hasCode, isRecord, parseSkillsLock } from './data.ts';
 import type { SkillName, SkillsLock } from './data.ts';
 
 export const repository = fileURLToPath(new URL('../', import.meta.url));
@@ -122,19 +122,6 @@ export async function temporary<T>(prefix: string, action: (directory: string) =
 export async function copy(source: string, destination: string): Promise<void> {
   await mkdir(path.dirname(destination), { recursive: true });
   await cp(source, destination, { recursive: true, force: false, errorOnExist: true });
-}
-
-export async function warnPendingSkills(repo: string): Promise<void> {
-  const directory = path.join(repo, '.agents', 'skills');
-  await noLinks(directory);
-  if (!await exists(directory)) return;
-  for (const entry of await readdir(directory, { withFileTypes: true })) {
-    if (entry.isDirectory() && await exists(path.join(directory, entry.name, 'SKILL.md'))) {
-      diagnostic({ level: 'warn', event: 'skill.unmanaged',
-        message: `Move .agents/skills/${entry.name} to skills/${entry.name} to include it.`,
-        context: { repo, skill: entry.name } });
-    }
-  }
 }
 
 export async function withMutex<T>(file: string, action: () => Promise<T>): Promise<T> {

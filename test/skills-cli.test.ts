@@ -71,7 +71,7 @@ test('actual pinned CLI verifies the selected skill path before accepting remote
     '-c', 'commit.gpgsign=false', 'commit', '--quiet', '-m', 'Fixture']);
   const source = pathToFileURL(repo).href;
   const name = safeName('demo');
-  const staged = await skillsAdd({ source, name, skillPath: 'skills/demo/SKILL.md', workspace: path.join(base, 'accepted') });
+  const staged = await skillsAdd({ source, name, skillPath: '.agents/skills/demo/SKILL.md', workspace: path.join(base, 'accepted') });
   assert.match(await readFile(path.join(staged.directory, 'SKILL.md'), 'utf8'), /Original instructions/);
   await assert.rejects(skillsAdd({ source, name, skillPath: 'another/demo/SKILL.md', workspace: path.join(base, 'rejected') }), /Upstream skill path changed/);
 });
