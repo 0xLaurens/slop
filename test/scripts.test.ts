@@ -2,12 +2,15 @@ import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { cp, mkdir, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
+import fs from 'node:fs/promises';
+import { syncBuiltinESMExports } from 'node:module';
 import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { diagnostic, errorMessage, hasCode, parseSkillsLock, parseUpstream } from '../scripts/data.ts';
 import { exists, fingerprint, json, options, readSkillsLock, safeName, skillHash, writeJson } from '../scripts/lib.ts';
-import { install, sources } from '../scripts/install.ts';
+import { install } from '../scripts/install.ts';
+import { sources } from '../scripts/deployment-state.ts';
 import { updateSkills } from '../scripts/update-skills.ts';
 import { fixture, makeSkill, stageSkill, tracked, upstream } from './fixtures.ts';
 
@@ -238,14 +241,21 @@ test('second preflight catches edits during staging', async (t) => {
 });
 
 test('deployment failure restores earlier files and the previous manifest', async (t) => {
-  const { repo, config, base } = await fixture(t);
+  const { repo, config } = await fixture(t);
   await makeSkill(repo);
   await writeFile(path.join(repo, '.agents', 'agents', 'review.md'), 'Original agent');
   await install({ repo, config, stageSkill });
   const manifest = await readFile(path.join(config, '.slop', 'manifest.json'), 'utf8');
   const skillBefore = await fingerprint(path.join(config, 'skills', 'demo'));
   await writeFile(path.join(repo, '.agents', 'agents', 'review.md'), 'Updated agent');
-  await assert.rejects(install({ repo, config, stageSkill: async () => ({ directory: path.join(base, 'missing-staged-directory') }) }), /ENOENT/);
+  const copy = fs.cp;
+  t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
+  t.mock.method(fs, 'cp', async (...args: Parameters<typeof fs.cp>) => {
+    if (args[1] === path.join(config, 'skills', 'demo')) throw new Error('Deployment copy failed');
+    return copy(...args);
+  });
+  syncBuiltinESMExports();
+  await assert.rejects(install({ repo, config, stageSkill }), /Deployment copy failed/);
   assert.equal(await readFile(path.join(config, 'agents', 'review.md'), 'utf8'), 'Original agent');
   assert.equal(await fingerprint(path.join(config, 'skills', 'demo')), skillBefore);
   assert.equal(await readFile(path.join(config, '.slop', 'manifest.json'), 'utf8'), manifest);
