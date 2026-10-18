@@ -30,6 +30,44 @@ test('arrow navigation wraps from first to last and last to first', async (t) =>
   assert.deepEqual(await down, ['first']);
 });
 
+test('group headings align with single and multiple choice labels and navigation skips headings', async (t) => {
+  const items = [
+    { value: 'first', label: 'First', group: 'Group A' },
+    { value: 'second', label: 'Second', group: 'Group B' },
+  ];
+  const single = terminal(t);
+  const singleSelection = single.ui.select('Single', items, [], false);
+  assert.match(cleanText(single.screen()), /  SLOP · Skills & agents\s+  Single/);
+  assert.match(cleanText(single.screen()), /  Group A\s+› First/);
+  assert.match(cleanText(single.screen()), /  Group A\s+› First\s+\s+  Group B\s+  Second/);
+  assert.doesNotMatch(cleanText(single.screen()), /──/);
+  single.key('down'); single.key('return');
+  assert.deepEqual(await singleSelection, ['second']);
+
+  const multiple = terminal(t);
+  const multipleSelection = multiple.ui.select('Multiple', items);
+  assert.match(cleanText(multiple.screen()), /      SLOP · Skills & agents\s+      Multiple/);
+  assert.match(cleanText(multiple.screen()), /      Group A\s+› \[ \] First/);
+  assert.match(cleanText(multiple.screen()), /      Group A\s+› \[ \] First\s+\s+      Group B\s+  \[ \] Second/);
+  assert.doesNotMatch(cleanText(multiple.screen()), /──/);
+  multiple.key('down'); multiple.key('space'); multiple.key('return');
+  assert.deepEqual(await multipleSelection, ['second']);
+});
+
+test('permanent deletion and warning text use neutral terminal styling', async (t) => {
+  const previous = process.env.NO_COLOR;
+  const oldTerm = process.env.TERM;
+  delete process.env.NO_COLOR;
+  process.env.TERM = 'xterm';
+  t.after(() => { if (previous === undefined) delete process.env.NO_COLOR; else process.env.NO_COLOR = previous; if (oldTerm === undefined) delete process.env.TERM; else process.env.TERM = oldTerm; });
+  const { ui, key, screen } = terminal(t);
+  const confirmation = ui.confirm('Permanent deletion', ['Deletes repository permanently', 'Warning: this cannot be undone.']);
+  const frame = screen().split('\x1b[2J').at(-1) ?? '';
+  assert.doesNotMatch(frame, /\x1b\[\d*;?31m|\x1b\[\d*;?36m/);
+  assert.match(cleanText(frame), /Permanent deletion/);
+  key('escape'); await confirmation;
+});
+
 test('arrow navigation wraps within filtered choices', async (t) => {
   const { ui, key } = terminal(t);
   const selection = ui.select('Filtered', [...choices, { value: 'third', label: 'Third' }]);
@@ -306,7 +344,7 @@ test('inline descriptions keep selection styling on the label and work without c
   assert.deepEqual(await selection, ['next']);
 });
 
-test('inline color styles only the selected label, not its delimiter or description', async (t) => {
+test('inline styling uses neutral bold selected labels, not color accents', async (t) => {
   const previous = process.env.NO_COLOR;
   const oldTerm = process.env.TERM;
   delete process.env.NO_COLOR;
@@ -315,14 +353,14 @@ test('inline color styles only the selected label, not its delimiter or descript
   const { ui, key, screen } = terminal(t);
   const selection = ui.select('Choose', [{ value: 'first', label: 'A | B 中文', detail: 'safe description' }, { value: 'second', label: 'Other', detail: 'neutral' }], [], false, { showDescriptions: true });
   const frame = () => screen().split('\x1b[2J').at(-1) ?? '';
-  assert.match(frame(), /› \x1b\[1;36mA \| B 中文\x1b\[0m\x1b\[2m \| safe description/);
+  assert.match(frame(), /› \x1b\[1mA \| B 中文\x1b\[0m\x1b\[2m \| safe description/);
   assert.match(frame(), /\x1b\[1mOther\x1b\[0m\x1b\[2m \| neutral/);
   key('down');
-  assert.match(frame(), /› \x1b\[1;36mOther\x1b\[0m\x1b\[2m \| neutral/);
+  assert.match(frame(), /› \x1b\[1mOther\x1b\[0m\x1b\[2m \| neutral/);
   assert.match(frame(), /\x1b\[1mA \| B 中文\x1b\[0m\x1b\[2m \| safe description/);
   key('d'); await setImmediate(); assert.match(frame(), /neutral/); assert.doesNotMatch(frame(), /safe description/);
   key('return'); await setImmediate();
-  assert.match(frame(), /› \x1b\[1;36mOther\x1b\[0m\x1b\[2m \| neutral/);
+  assert.match(frame(), /› \x1b\[1mOther\x1b\[0m\x1b\[2m \| neutral/);
   key('escape'); await selection;
 });
 
@@ -336,14 +374,14 @@ test('inline menu narrow Unicode rows stay within width and dumb terminals emit 
   key('escape'); await selection;
 });
 
-test('inline multiple-choice styling leaves the checked prefix neutral and lights only the label', async (t) => {
+test('inline multiple-choice styling leaves checked prefix neutral and bolds selected label', async (t) => {
   const oldTerm = process.env.TERM; const oldColor = process.env.NO_COLOR;
   process.env.TERM = 'xterm'; delete process.env.NO_COLOR;
   t.after(() => { if (oldTerm === undefined) delete process.env.TERM; else process.env.TERM = oldTerm; if (oldColor === undefined) delete process.env.NO_COLOR; else process.env.NO_COLOR = oldColor; });
   const { ui, key, screen } = terminal(t);
   const selection = ui.select('Choose', [{ value: 'item', label: 'Selected label', detail: 'Description' }], ['item'], true, { showDescriptions: true });
   const frame = screen().split('\x1b[2J').at(-1) ?? '';
-  assert.match(frame, /› \[x\] \x1b\[1;36mSelected label\x1b\[0m\x1b\[2m \| Description/);
+  assert.match(frame, /› \[x\] \x1b\[1mSelected label\x1b\[0m\x1b\[2m \| Description/);
   key('escape'); await selection;
 });
 

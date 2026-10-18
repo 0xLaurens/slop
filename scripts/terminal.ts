@@ -82,10 +82,10 @@ export class Terminal {
 
   private width(): number { return Math.max(1, (this.output.columns || 80) - 1); }
 
-  private layout(title: string, footer: string, details: readonly string[] = [], intro: readonly string[] = []) {
+  private layout(title: string, footer: string, details: readonly string[] = [], intro: readonly string[] = [], indent = '') {
     const rows = Math.max(1, this.output.rows || 24);
     const width = this.width();
-    const head = ['SLOP · Skills & agents', ...wrap(title, width), ...intro.flatMap((line) => wrap(line, width)), ''];
+    const head = [`${indent}SLOP · Skills & agents`, ...wrap(`${indent}${title}`, width), ...intro.flatMap((line) => wrap(`${indent}${line}`, width)), ''];
     const hints = wrap(footer, width);
     const tail = ['', ...details.flatMap((line) => wrap(line, width)).slice(0, 3), ...hints];
     // Keep the title and controls usable even in a small terminal.
@@ -96,8 +96,8 @@ export class Terminal {
     return { head, tail, capacity: Math.max(1, rows - head.length - tail.length) };
   }
 
-  private draw(title: string, lines: readonly string[], footer: string, details: readonly string[] = [], intro: readonly string[] = [], inlineRows: ReadonlyMap<string, { start: number; length: number; selected: boolean }> = new Map()): void {
-    const { head, tail, capacity } = this.layout(title, footer, details, intro);
+  private draw(title: string, lines: readonly string[], footer: string, details: readonly string[] = [], intro: readonly string[] = [], inlineRows: ReadonlyMap<string, { start: number; length: number; selected: boolean }> = new Map(), indent = ''): void {
+    const { head, tail, capacity } = this.layout(title, footer, details, intro, indent);
     const body = lines.slice(0, capacity);
     const rows = [...head, ...body, ...Array<string>(Math.max(0, capacity - body.length)).fill(''), ...tail];
     const width = this.width();
@@ -105,14 +105,13 @@ export class Terminal {
     this.output.write(`\x1b[H\x1b[2J${rows.map((line, index) => {
       const text = fit(line, width);
       if (!color) return text;
-      const style = text.includes('Permanent deletion') || text.startsWith('Deletes repository') ? '1;31'
-        : text.startsWith('›') ? '1;36' : text.startsWith('──') || index === 0 ? '36' : index >= rows.length - tail.length ? '2' : '';
+      const style = index >= rows.length - tail.length ? '2' : '';
       const inline = inlineRows.get(line);
       if (inline !== undefined) {
         const prefix = fit(line, width);
         const start = Math.min(displayWidth(prefix), inline.start);
         const end = Math.min(displayWidth(prefix), start + inline.length);
-        const labelStyle = inline.selected ? '1;36' : '1';
+        const labelStyle = '1';
         return `${graphemeSlice(prefix, 0, start)}\x1b[${labelStyle}m${graphemeSlice(prefix, start, end)}\x1b[0m\x1b[2m${graphemeSlice(prefix, end)}\x1b[0m`;
       }
       return style ? `\x1b[${style}m${text}\x1b[0m` : text;
@@ -147,13 +146,18 @@ export class Terminal {
         const footer = searching ? 'Type to filter · Enter done · Esc clear filter'
           : `↑↓ move${multiple ? ` · Space toggle · a select ${query ? 'matches' : 'all'} · n clear ${query ? 'matches' : 'selection'}` : ''}${searchable ? ' · / search' : ''} · Enter ${options.continueLabel ?? (multiple ? 'review' : 'choose')} · Esc back${current?.detail ? ' · d details' : ''} · ? help`;
         const details = options.showDescriptions || (this.output.rows || 24) < 18 ? [] : current?.detail ? current.detail.split('\n').slice(0, 2).map((line) => fit(line, this.width())) : [];
-        const capacity = this.layout(title, footer, [...details, ''], intro).capacity;
+        const indent = multiple ? '      ' : '  ';
+        const capacity = this.layout(title, footer, [...details, ''], intro, indent).capacity;
         const lines: string[] = [];
         const inlineRows = new Map<string, { start: number; length: number; selected: boolean }>();
         const positions: number[] = [];
         let group: string | undefined;
         visible.forEach((choice, index) => {
-          if (choice.group && choice.group !== group) { lines.push(`── ${choice.group} ──`); group = choice.group; }
+          if (choice.group && choice.group !== group) {
+            if (group !== undefined) lines.push('');
+            lines.push(`${multiple ? '      ' : '  '}${choice.group}`);
+            group = choice.group;
+          }
           positions.push(lines.length);
           const checked = selected.has(choice.value);
           const row = `${index === cursor ? '›' : ' '} ${multiple ? `[${choice.disabled ? '-' : checked ? 'x' : ' '}] ` : ''}${choice.label}${choice.status ? ` · ${choice.status(checked)}` : ''}`;
@@ -174,7 +178,7 @@ export class Terminal {
         const visiblePositions = positions.map((position, index) => position >= start && position < start + capacity ? index + 1 : 0).filter(Boolean);
         const position = visible.length ? `Showing ${visiblePositions[0] ?? cursor + 1}–${visiblePositions.at(-1) ?? cursor + 1} of ${visible.length}${query ? ` matches (${choices.length} total)` : ''}` : '';
         step = Math.max(1, Math.floor(capacity));
-        this.draw(title, body, footer, [...details, fit(position, this.width())], intro, inlineRows);
+         this.draw(title, body, footer, [...details, fit(position, this.width())], intro, inlineRows, indent);
       };
       const handle = (text: string, key: Key) => {
         if (key.ctrl && key.name === 'c') return finish(undefined);
