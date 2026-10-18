@@ -32,10 +32,13 @@ test('live summary agrees with grouped review and explicitly preserves repositor
   const plan = deploymentPlan({ repo: '/repo', config: '/config', items, selected });
   assert.equal(installationSummary(plan), '1 install · 0 replace · 1 uninstall · 0 unchanged');
   const review = installationReview(plan);
-  assert.ok(review.includes('Repository files: unchanged'));
-  assert.ok(review.includes('Destination: /config'));
-  assert.ok(review.includes('Install'));
-  assert.ok(review.includes('Uninstall globally'));
+  assert.equal(review.summary, '2 pending changes · 0 unchanged');
+  assert.ok(review.context.includes('Repository files: unchanged'));
+  assert.ok(review.context.includes('Destination: /config'));
+  assert.deepEqual(review.sections, [
+    { title: 'Install · 1', items: ['skills/test'] },
+    { title: 'Uninstall globally · 1', items: ['skills/old'] },
+  ]);
 });
 
 test('choices use short names, type groups, descriptions, and upstream details', async (t) => {
@@ -50,6 +53,20 @@ test('choices use short names, type groups, descriptions, and upstream details',
   assert.match(choices[0]?.detail ?? '', /Upstream: https:\/\/github.com\/example\/skills.git/);
   assert.equal(choices[1]?.label, 'reviewer');
   assert.match(choices[2]?.label ?? '', /Shared instructions/);
+});
+
+test('installation review preserves blocked reasons and missing ownership cleanup', () => {
+  const plan = deploymentPlan({ repo: '/repo', config: '/config', selected: new Set(), items: [
+    { ...item, target: 'skills/edited', installed: true, managed: true, edited: true },
+    { ...item, target: 'skills/missing', managed: true },
+    item,
+  ] });
+  const review = installationReview(plan);
+  assert.equal(review.summary, '1 pending change · 1 unchanged · 1 blocked');
+  assert.deepEqual(review.sections, [
+    { title: 'Uninstall globally · 1', items: ['skills/missing (clear missing entry)'] },
+    { title: 'Blocked — resolve before applying · 1', items: ['skills/edited: installed copy was edited'] },
+  ]);
 });
 
 test('path completion supports relative directories, files, and multiple matches', async (t) => {

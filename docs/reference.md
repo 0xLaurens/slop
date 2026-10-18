@@ -50,7 +50,9 @@ Skills, agents, and shared instructions have separate headings.
 | **n** | Clear visible matches |
 | **d** | Show the highlighted skill or agent's description and source |
 | **?** | Open keyboard help without losing selections |
-| **Left**, **Right**, **Tab** on review | Choose the back or apply button |
+| **Up**, **Down** on review | Choose the back or apply action |
+| **Page Up**, **Page Down**, **Home**, **End** on review | Scroll review changes |
+| **Left**, **Right**, **Tab** on review | Action-selection aliases |
 | **Tab** in an import path prompt | Complete a local path |
 
 Selections outside the filter remain selected and contribute to the count.
@@ -59,7 +61,10 @@ Selections are not saved between workflows or sessions. Uninstalled items start
 unchecked. Pending actions use **Keep**, **Install**, **Replace**, and **Uninstall**
 labels, with counts that change as selections change.
 
-Review and confirmation share a screen. The default button returns to selection.
+Review and confirmation share a screen. Back and apply appear directly beneath
+visible changes, and Enter names the selected action. Back is the default;
+Up/Down selects an action. Page Up/Down, Home, and End scroll changes without
+approving them. Esc cancels.
 Returning preserves the choices, filter, and focused row for that workflow.
 
 ### Imports and updates

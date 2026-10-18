@@ -117,8 +117,11 @@ test('review defaults to cancellation and Escape backs out immediately', async (
   key('return');
   assert.equal(await defaultCancel, false);
   const apply = ui.confirm('Delete?', ['DELETE first']);
-  key('right'); key('return');
+  key('up'); key('return');
   assert.equal(await apply, true);
+  const cycle = ui.confirm('Delete?', ['DELETE first']);
+  key('down'); key('return');
+  assert.equal(await cycle, true);
 });
 
 test('text input supports editing and cancellation', async (t) => {
@@ -201,15 +204,142 @@ test('live statuses and summaries update immediately when toggling', async (t) =
   key('return'); await selected;
 });
 
-test('review keeps changes visible while selecting an action; arrows scroll rather than approving', async (t) => {
+test('review actions sit beneath changes and Up/Down select while paging only scrolls', async (t) => {
   const { ui, key, screen } = terminal(t);
   const review = ui.confirm('Review changes', ['Uninstall globally', '  tdd'], 'Apply installation changes');
-  key('right');
   const frame = screen().split('\x1b[2J').at(-1) ?? '';
   assert.match(frame, /Uninstall globally/);
   assert.match(frame, /Apply installation changes/);
-  key('left'); key('down'); key('return');
+  key('down'); key('return');
+  assert.equal(await review, true);
+  const canceled = ui.confirm('Review', Array.from({length: 30}, (_, i) => `Change ${i}`));
+  key('pagedown');
+  assert.match(screen(), /› Back to selection/);
+  assert.match(screen(), /Change 29/);
+  key('escape'); assert.equal(await canceled, false);
+});
+
+test('structured reviews distinguish headings, context, targets, and the focused action', async (t) => {
+  const previous = process.env.NO_COLOR;
+  const oldTerm = process.env.TERM;
+  delete process.env.NO_COLOR;
+  process.env.TERM = 'xterm';
+  t.after(() => { if (previous === undefined) delete process.env.NO_COLOR; else process.env.NO_COLOR = previous; if (oldTerm === undefined) delete process.env.TERM; else process.env.TERM = oldTerm; });
+  const { ui, key, screen, output } = terminal(t);
+  output.columns = 64; output.rows = 22;
+  const review = ui.confirm('Review installation changes', {
+    summary: '1 pending change · 10 unchanged',
+    context: ['Destination: /home/thonk/.config/opencode', 'Repository files: unchanged'],
+    sections: [{ title: 'Uninstall globally · 1', items: ['skills/grilling'] }],
+  }, 'Apply installation changes');
+  const frame = () => screen().split('\x1b[2J').at(-1) ?? '';
+  assert.match(frame(), /\x1b\[2mSLOP · Skills & agents\x1b\[0m/);
+  assert.match(frame(), /\x1b\[1mReview installation changes\x1b\[0m/);
+  assert.match(frame(), /\x1b\[1m1 pending change · 10 unchanged\x1b\[0m/);
+  assert.match(frame(), /\x1b\[2mRepository files: unchanged\x1b\[0m/);
+  assert.match(frame(), /\x1b\[1mUninstall globally · 1\x1b\[0m\r\n  skills\/grilling/);
+  assert.match(frame(), /\x1b\[1;7m› Back to selection\x1b\[0m/);
+  assert.match(cleanText(frame()), /skills\/grilling\n\n› Back to selection/);
+  assert.doesNotMatch(frame(), /PgUp|0 install|0 replace/);
+  key('down');
+  assert.match(frame(), /\x1b\[1;7m› Apply installation changes\x1b\[0m/);
+  key('escape'); assert.equal(await review, false);
+});
+
+test('structured reviews retain hierarchy without color and scroll long content after resize', async (t) => {
+  const previous = process.env.NO_COLOR;
+  process.env.NO_COLOR = '';
+  t.after(() => { if (previous === undefined) delete process.env.NO_COLOR; else process.env.NO_COLOR = previous; });
+  const { ui, key, screen, output } = terminal(t);
+  const review = ui.confirm('Review installation changes', {
+    summary: '30 pending changes · 0 unchanged',
+    context: ['Destination: /a/long/destination/path', 'Repository files: unchanged'],
+    sections: [{ title: 'Uninstall globally · 30', items: Array.from({ length: 30 }, (_, i) => `skills/skill-${i}`) }],
+  }, 'Apply installation changes');
+  const frame = () => screen().split('\x1b[2J').at(-1) ?? '';
+  assert.doesNotMatch(frame(), /\x1b\[\d[\d;]*m/);
+  assert.match(frame(), /30 pending changes · 0 unchanged\r\n\r\nDestination/);
+  assert.match(frame(), /PgUp\/PgDn Home\/End scroll/);
+  key('end');
+  assert.match(frame(), /skills\/skill-29/);
+  key('return'); assert.equal(await review, false);
+
+  const resized = ui.confirm('Review', {
+    summary: '1 pending change', context: ['Destination: /config'],
+    sections: [{ title: 'Install · 1', items: ['skills/very-long-unbroken-target-name'] }],
+  });
+  for (const [columns, rows] of [[18, 10], [40, 12], [64, 22], [2, 1]] as const) {
+    output.columns = columns; output.rows = rows; output.emit('resize'); key('end');
+    assert.ok(frame().split('\r\n').length <= rows);
+    assert.ok(frame().split('\r\n').every((line) => [...line].length < columns));
+  }
+  key('escape'); assert.equal(await resized, false);
+});
+
+test('review actions and contextual Enter guidance appear by the heading and adapt to resize', async (t) => {
+  const { ui, key, screen, output } = terminal(t);
+  output.columns = 48; output.rows = 16;
+  const review = ui.confirm('Review permanent deletion', ['DELETE a very-long-target-name-that-wraps', 'Import another long source'], 'Delete permanently and create PR');
+  const rawFrame = () => screen().split('\x1b[2J').at(-1) ?? '';
+  const frame = () => cleanText(rawFrame());
+  const lines = () => rawFrame().split('\r\n').map(cleanText);
+  assert.match(frame(), /Review permanent deletion[\s\S]*DELETE a very-long[\s\S]*› Back to selection[\s\S]*Delete permanently and create PR/);
+  assert.match(frame(), /Enter: Back to selection/);
+  assert.ok(lines().indexOf('DELETE a very-long-target-name-that-wraps') < lines().indexOf('› Back to selection'));
+  key('right');
+  assert.match(frame(), /Enter: Delete permanently and create PR/);
+  key('tab');
+  assert.match(frame(), /Enter: Back to selection/);
+  key('left'); key('pagedown'); key('home'); key('end'); key('return');
   assert.equal(await review, false);
+
+  output.columns = 18; output.rows = 10;
+  const changes = ['DELETE one', 'DELETE two', 'DELETE three', 'DELETE four', 'DELETE five', 'DELETE six'];
+  const resized = ui.confirm('Review permanent deletion', changes, 'Delete permanently and create PR');
+  assert.match(frame(), /› Back to\s+selection/);
+  assert.match(frame(), /Enter → Back/);
+  assert.match(frame(), /↑↓ choose/);
+  assert.match(frame(), /Pg↑↓ Home\/End Esc/);
+  assert.match(frame(), /DELETE one/);
+  assert.ok(lines().some((line) => /^DELETE (one|two|three|four|five|six)$/.test(cleanText(line))), 'at least one change row remains scrollable');
+  key('right');
+  assert.match(frame(), /Enter → Apply/);
+  assert.match(frame(), /↑↓ choose/);
+  assert.match(frame(), /Pg↑↓ Home\/End Esc/);
+  key('end');
+  assert.match(frame(), /DELETE six/);
+  assert.match(frame(), /Delete\s+permanently\s+and\s+create\s+PR/);
+  assert.match(frame(), /Enter → Apply/);
+  assert.ok(lines().length <= output.rows);
+  assert.ok(lines().every((line) => [...cleanText(line)].length < output.columns));
+  output.columns = 80; output.rows = 12; output.emit('resize');
+  assert.match(frame(), /Enter: Delete permanently and create PR/);
+  output.columns = 18; output.rows = 10; output.emit('resize'); key('end');
+  assert.match(frame(), /DELETE six/);
+  key('left');
+  assert.match(frame(), /Enter → Back/);
+  assert.match(frame(), /↑↓ choose/);
+  assert.match(frame(), /Pg↑↓ Home\/End Esc/);
+  assert.match(frame(), /DELETE six/);
+  output.columns = 18; output.rows = 10; output.emit('resize');
+  assert.ok(lines().length <= output.rows);
+  output.rows = 1; output.emit('resize');
+  assert.ok(lines().length <= 1);
+  key('return'); assert.equal(await resized, false);
+
+  const install = ui.confirm('Review installation changes', ['Install selected skill'], 'Apply installation changes');
+  output.rows = 10; output.columns = 18; output.emit('resize');
+  const compactText = () => frame().replace(/\s+/g, ' ');
+  assert.match(compactText(), /Enter → Back/);
+  key('right');
+  assert.match(compactText(), /› Apply installation changes/);
+  assert.match(compactText(), /Enter → Apply/);
+  key('escape'); assert.equal(await install, false);
+
+  output.rows = 24; output.columns = 80;
+  const trailingBlanks = ui.confirm('Review installation', ['Install skill', '  details', '', '']);
+  assert.match(frame(), /  details\s+› Back to selection/);
+  key('escape'); assert.equal(await trailingBlanks, false);
 });
 
 test('input validation keeps the value and shows errors inline', async (t) => {

@@ -34,6 +34,14 @@ export interface TextOptions {
   state?: { value?: string };
 }
 
+export interface ReviewContent {
+  summary: string;
+  context: readonly string[];
+  sections: readonly { title: string; items: readonly string[] }[];
+}
+
+interface ReviewRow { text: string; style?: 'muted' | 'heading' | 'focused' }
+
 type TerminalInput = Readable & { isTTY?: boolean; isRaw?: boolean; setRawMode: (enabled: boolean) => unknown };
 type TerminalOutput = Writable & { isTTY?: boolean; columns?: number; rows?: number };
 
@@ -85,10 +93,10 @@ export class Terminal {
   private layout(title: string, footer: string, details: readonly string[] = [], intro: readonly string[] = [], indent = '') {
     const rows = Math.max(1, this.output.rows || 24);
     const width = this.width();
-    const head = [`${indent}SLOP · Skills & agents`, ...wrap(`${indent}${title}`, width), ...intro.flatMap((line) => wrap(`${indent}${line}`, width)), ''];
+    const introLines = intro.flatMap((line) => wrap(`${indent}${line}`, width));
+    const head = [`${indent}SLOP · Skills & agents`, ...wrap(`${indent}${title}`, width), ...introLines, ''];
     const hints = wrap(footer, width);
     const tail = ['', ...details.flatMap((line) => wrap(line, width)).slice(0, 3), ...hints];
-    // Keep the title and controls usable even in a small terminal.
     while (head.length + tail.length >= rows && head.length > 2) head.pop();
     while (head.length + tail.length >= rows && tail.length > 1) tail.shift();
     while (head.length + tail.length >= rows && head.length) head.pop();
@@ -96,16 +104,19 @@ export class Terminal {
     return { head, tail, capacity: Math.max(1, rows - head.length - tail.length) };
   }
 
-  private draw(title: string, lines: readonly string[], footer: string, details: readonly string[] = [], intro: readonly string[] = [], inlineRows: ReadonlyMap<string, { start: number; length: number; selected: boolean }> = new Map(), indent = ''): void {
+  private draw(title: string, lines: readonly string[], footer: string, details: readonly string[] = [], intro: readonly string[] = [], inlineRows: ReadonlyMap<string, { start: number; length: number; selected: boolean }> = new Map(), indent = '', compact = false): void {
     const { head, tail, capacity } = this.layout(title, footer, details, intro, indent);
     const body = lines.slice(0, capacity);
-    const rows = [...head, ...body, ...Array<string>(Math.max(0, capacity - body.length)).fill(''), ...tail];
+    const rows = [...head, ...body, ...Array<string>(compact ? 0 : Math.max(0, capacity - body.length)).fill(''), ...tail];
     const width = this.width();
     const color = !('NO_COLOR' in process.env) && Boolean(process.env.TERM) && process.env.TERM !== 'dumb';
     this.output.write(`\x1b[H\x1b[2J${rows.map((line, index) => {
       const text = fit(line, width);
       if (!color) return text;
-      const style = index >= rows.length - tail.length ? '2' : '';
+      const titleStart = 1;
+      const titleEnd = titleStart + wrap(`${indent}${title}`, width).length;
+      const style = index >= rows.length - tail.length || index === 0 ? '2'
+        : index >= titleStart && index < titleEnd ? '1' : '';
       const inline = inlineRows.get(line);
       if (inline !== undefined) {
         const prefix = fit(line, width);
@@ -116,6 +127,17 @@ export class Terminal {
       }
       return style ? `\x1b[${style}m${text}\x1b[0m` : text;
     }).join('\r\n')}`);
+  }
+
+  private drawReview(rows: readonly ReviewRow[]): void {
+    const width = this.width();
+    const color = !('NO_COLOR' in process.env) && Boolean(process.env.TERM) && process.env.TERM !== 'dumb';
+    const styles = { muted: '2', heading: '1', focused: '1;7' };
+    const bounded = rows.slice(0, Math.max(1, this.output.rows || 24)).map(({ text, style }) => {
+      const line = fit(text, width);
+      return color && style && line.trim() ? `\x1b[${styles[style]}m${line}\x1b[0m` : line;
+    });
+    this.output.write(`\x1b[H\x1b[2J${bounded.join('\r\n')}`);
   }
 
   async select(title: string, choices: readonly Choice[], initial: readonly string[] = [], multiple = true,
@@ -287,17 +309,70 @@ export class Terminal {
     });
   }
 
-  async confirm(title: string, changes: readonly string[], applyLabel = 'Apply changes'): Promise<boolean> {
+  async confirm(title: string, changes: readonly string[] | ReviewContent, applyLabel = 'Apply changes'): Promise<boolean> {
     let offset = 0;
     let apply = false;
     return this.screens.open(false, (finish) => {
-      const details = () => [`${apply ? '  Back to selection    ›' : '› Back to selection     '} ${applyLabel}`];
-      const footer = '↑↓ / PgUp PgDn scroll · ←→ / Tab choose action · Enter confirm · Esc back';
-      const lines = () => changes.flatMap((line) => wrap(line, this.width()));
-      const capacity = () => this.layout(title, footer, details()).capacity;
+      const action = (label: string, focused: boolean) => {
+        const width = Math.max(1, this.width() - 2);
+        const lines: string[] = [];
+        let line = '';
+        for (const word of cleanText(label).split(/\s+/)) {
+          if (line && displayWidth(`${line} ${word}`) > width) { lines.push(line); line = ''; }
+          line = line ? `${line} ${word}` : word;
+        }
+        if (line) lines.push(line);
+        return lines.flatMap((text) => wrap(text, width)).map((text, index): ReviewRow => ({
+          text: `${index === 0 && focused ? '› ' : '  '}${text}`,
+          style: focused ? 'focused' : undefined,
+        }));
+      };
+      const actions = () => [...action('Back to selection', !apply), ...action(applyLabel, apply)];
+      const structured = !Array.isArray(changes) ? changes as ReviewContent : undefined;
+      const row = (text: string, style?: ReviewRow['style']): ReviewRow => ({ text, style });
+      const lines = () => {
+        if (structured) return [
+          ...structured.context.flatMap((line) => wrap(line, this.width()).map((text) => row(text, 'muted'))),
+          row(''),
+          ...structured.sections.flatMap((section, index) => [
+            ...index ? [row('')] : [],
+            ...wrap(section.title, this.width()).map((text) => row(text, 'heading')),
+            ...section.items.flatMap((item) => wrap(item, Math.max(1, this.width() - 2)).map((text) => row(`  ${text}`))),
+          ]),
+        ];
+        const content = [...changes as readonly string[]];
+        while (content.at(-1)?.trim() === '') content.pop();
+        return content.flatMap((line) => wrap(line, this.width()).map((text) => row(text)));
+      };
+      const enterHint = () => this.output.rows && this.output.rows <= 10
+        ? `Enter → ${apply ? 'Apply' : 'Back'}`
+        : `Enter: ${apply ? applyLabel : 'Back to selection'}`;
+      const layout = () => {
+        const rows = Math.max(1, this.output.rows || 24);
+        const content = lines();
+        const buttons = actions();
+        const enter = wrap(enterHint(), this.width()).map((text) => row(text, 'muted'));
+        const compact = rows <= 10;
+        const head = [row('SLOP · Skills & agents', 'muted'), ...wrap(title, this.width()).map((text) => row(text, 'heading')), row(''),
+          ...structured ? [...wrap(structured.summary, this.width()).map((text) => row(text, 'heading')), row('')] : []];
+        const hintsFor = (scrollable: boolean) => (compact ? ['↑↓ choose', 'Pg↑↓ Home/End Esc']
+          : wrap(`↑↓ choose · ${scrollable ? 'PgUp/PgDn Home/End scroll · ' : ''}Esc cancel`, this.width()))
+          .map((text) => row(text, 'muted'));
+        // Spend space on separation only when a change row can remain visible.
+        const room = rows - head.length - buttons.length - enter.length - hintsFor(false).length;
+        const spacing = !compact && room >= 3 ? [row('')] : [];
+        const scrollable = content.length > room - spacing.length * 2;
+        const hints = hintsFor(scrollable);
+        const tail = [...spacing, ...buttons, ...spacing, ...enter, ...hints];
+        while (head.length + tail.length + 1 > rows && head.length) head.pop();
+        return { head, tail, content, capacity: Math.max(0, rows - head.length - tail.length) };
+      };
+      const capacity = () => layout().capacity;
       const render = () => {
-        offset = Math.max(0, Math.min(offset, Math.max(0, lines().length - capacity())));
-        this.draw(title, lines().slice(offset), footer, details());
+        const { head, tail, content, capacity } = layout();
+        offset = Math.max(0, Math.min(offset, Math.max(0, content.length - capacity)));
+        const visible = content.slice(offset, offset + capacity);
+        this.drawReview([...head, ...visible, ...tail]);
       };
       const handle = (_text: string, key: Key) => {
         if (key.name === 'escape' || (key.ctrl && key.name === 'c')) return finish(false);
@@ -305,12 +380,11 @@ export class Terminal {
         if (key.name === 'right') apply = true;
         if (key.name === 'left') apply = false;
         if (key.name === 'tab') apply = !apply;
-        if (key.name === 'up') offset--;
-        if (key.name === 'down') offset++;
+        if (key.name === 'up' || key.name === 'down') apply = !apply;
         if (key.name === 'pageup') offset -= capacity();
         if (key.name === 'pagedown') offset += capacity();
         if (key.name === 'home') offset = 0;
-        if (key.name === 'end') offset = lines().length;
+        if (key.name === 'end') offset = Math.max(0, lines().length - capacity());
         render();
       };
       return { render, key: handle };
