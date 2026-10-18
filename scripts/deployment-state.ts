@@ -1,4 +1,4 @@
-import { lstat, readdir } from 'node:fs/promises';
+import fs from 'node:fs/promises';
 import path from 'node:path';
 import { isRecord } from './data.ts';
 import { exists, fingerprint, json, noLinks, safeName, skillName } from './lib.ts';
@@ -33,7 +33,7 @@ export async function sources(repo: string): Promise<DeploymentSources> {
     const directory = path.join(repo, '.agents', kind);
     await noLinks(directory);
     if (!await exists(directory)) continue;
-    for (const entry of await readdir(directory, { withFileTypes: true })) {
+    for (const entry of await fs.readdir(directory, { withFileTypes: true })) {
       if (entry.name === '.gitkeep') continue;
       const source = path.join(directory, entry.name);
       await noLinks(source);
@@ -51,7 +51,7 @@ export async function sources(repo: string): Promise<DeploymentSources> {
   const instructions = path.join(repo, '.agents', 'instructions', 'AGENTS.md');
   await noLinks(instructions);
   if (!await exists(instructions)) return result;
-  if (!(await lstat(instructions)).isFile()) throw new Error('.agents/instructions/AGENTS.md must be a regular file');
+  if (!(await fs.lstat(instructions)).isFile()) throw new Error('.agents/instructions/AGENTS.md must be a regular file');
   result.set('AGENTS.md', { source: instructions, origin: 'repository' });
   return result;
 }

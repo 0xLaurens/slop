@@ -1,4 +1,4 @@
-import { readFile, readdir } from 'node:fs/promises';
+import fs from 'node:fs/promises';
 import { homedir } from 'node:os';
 import path from 'node:path';
 import { parse } from 'yaml';
@@ -58,7 +58,7 @@ export async function fileChoices(request: FileChoicesRequest): Promise<Choice[]
     const name = skill ? item.target.slice(7) : agent ? item.target.slice(7, -3) : 'Shared instructions (AGENTS.md)';
     let description = '';
     if (item.source) {
-      const text = await readFile(skill ? path.join(item.source, 'SKILL.md') : item.source, 'utf8');
+      const text = await fs.readFile(skill ? path.join(item.source, 'SKILL.md') : item.source, 'utf8');
       const frontmatter = text.match(/^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/)?.[1];
       if (frontmatter) {
         try { const metadata: unknown = parse(frontmatter); if (isRecord(metadata) && typeof metadata.description === 'string') description = metadata.description; }
@@ -91,7 +91,7 @@ export async function completePath(value: string, base = repository): Promise<st
   const directory = endsWithSeparator || !value ? resolved : path.dirname(resolved);
   const prefix = endsWithSeparator || !value ? '' : path.basename(resolved);
   await noLinks(directory);
-  const matches = (await readdir(directory, { withFileTypes: true }))
+  const matches = (await fs.readdir(directory, { withFileTypes: true }))
     .filter((entry) => !entry.isSymbolicLink() && (entry.isFile() || entry.isDirectory()) && entry.name.startsWith(prefix));
   const typedDirectory = endsWithSeparator ? value : value.slice(0, Math.max(0, value.length - prefix.length));
   return matches.sort((a, b) => a.name.localeCompare(b.name)).map((entry) => `${typedDirectory}${entry.name}${entry.isDirectory() ? path.sep : ''}`);

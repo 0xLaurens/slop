@@ -100,7 +100,7 @@ disables color output. No action depends on color alone.
 
 ## Installation safety
 
-The installer uses Vercel's `skills@1.7.2` CLI, pinned in `package-lock.json`,
+The installer uses Vercel's `skills@1.7.2` CLI, pinned in `bun.lock`,
 to stage skills in an isolated temporary home and project. It then deploys copies
 to OpenCode's config directory. It does not run a direct global `skills add`,
 change other agents' installations, or depend on the CLI's global path assumptions.
@@ -128,7 +128,7 @@ Recovery steps are in [Recover blocked operations](recovery.md).
 
 ## Skill updates
 
-`npm run skills:update` reads the original source, optional ref, and skill path
+`bun run skills:update` reads the original source, optional ref, and skill path
 from `skills-lock.json`. It fetches through the pinned skills CLI. GitHub, GitLab,
 and unambiguous Git repository sources are supported. Skills without lock entries,
 local sources, and npm-installed sources are skipped.
@@ -185,9 +185,9 @@ retry steps. No automatic rollback or branch switch occurs.
 
 ## Development
 
-Scripts run TypeScript directly in Node through native type stripping. There is
+Scripts run TypeScript directly with Bun's native TypeScript support. There is
 no build step, loader, or transpiler. Only erasable TypeScript syntax is supported.
-Node does not type-check. `npm run typecheck` checks scripts and tests in strict
+Bun does not type-check. `bun run typecheck` checks scripts and tests in strict
 mode without emitting files. Runtime validation checks JSON and YAML before use
 as typed application data. The terminal interface adds no UI dependencies.
 

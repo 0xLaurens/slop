@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import test from 'node:test';
+import { test } from 'node:test';
 import type { TestContext } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { hasCode } from '../scripts/data.ts';
@@ -304,7 +304,7 @@ test('TUI help works without a terminal; noninteractive launch gives useful guid
   const script = fileURLToPath(new URL('../scripts/tui.ts', import.meta.url));
   const help = spawnSync(process.execPath, [script, '--help'], { encoding: 'utf8' });
   assert.equal(help.status, 0, help.stderr);
-  assert.match(help.stdout, /npm run tui/);
+  assert.match(help.stdout, /bun run tui/);
   const launch = spawnSync(process.execPath, [script], { encoding: 'utf8' });
   assert.equal(launch.status, 1);
   assert.match(launch.stderr, /requires an interactive terminal/);

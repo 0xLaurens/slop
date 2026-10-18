@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { cp, lstat, mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
+import fs from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -12,23 +12,23 @@ import type { SkillName, SkillsLock } from './data.ts';
 export const repository = fileURLToPath(new URL('../', import.meta.url));
 
 export async function exists(file: string): Promise<boolean> {
-  try { await lstat(file); return true; }
+  try { await fs.lstat(file); return true; }
   catch (error) { if (hasCode(error, 'ENOENT')) return false; throw error; }
 }
 
-export async function json(file: string): Promise<unknown> { return JSON.parse(await readFile(file, 'utf8')); }
+export async function json(file: string): Promise<unknown> { return JSON.parse(await fs.readFile(file, 'utf8')); }
 
 export async function readSkillsLock(file: string): Promise<SkillsLock> {
   return parseSkillsLock(await json(file));
 }
 
 export async function writeJson(file: string, value: unknown): Promise<void> {
-  await mkdir(path.dirname(file), { recursive: true });
+  await fs.mkdir(path.dirname(file), { recursive: true });
   const temporary = `${file}.${randomUUID()}.tmp`;
   try {
-    await writeFile(temporary, `${JSON.stringify(value, null, 2)}\n`, { flag: 'wx' });
-    await rename(temporary, file);
-  } finally { await rm(temporary, { force: true }); }
+    await fs.writeFile(temporary, `${JSON.stringify(value, null, 2)}\n`, { flag: 'wx' });
+    await fs.rename(temporary, file);
+  } finally { await fs.rm(temporary, { force: true }); }
 }
 
 export function options<const T extends ParseArgsOptionsConfig>(definitions: T, args = process.argv.slice(2)) {
@@ -46,7 +46,7 @@ export function safeName(name: string): SkillName {
 }
 
 export async function skillName(directory: string): Promise<SkillName> {
-  const contents = await readFile(path.join(directory, 'SKILL.md'), 'utf8');
+  const contents = await fs.readFile(path.join(directory, 'SKILL.md'), 'utf8');
   const frontmatter = contents.match(/^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/);
   if (!frontmatter?.[1]) throw new Error(`Missing SKILL.md frontmatter: ${directory}`);
   const data: unknown = parse(frontmatter[1]);
@@ -64,7 +64,7 @@ export async function noLinks(target: string): Promise<void> {
   for (const part of absolute.slice(base.length).split(path.sep).filter(Boolean)) {
     current = path.join(current, part);
     try {
-      if ((await lstat(current)).isSymbolicLink()) throw new Error(`Symlink/junction is not supported: ${current}`);
+      if ((await fs.lstat(current)).isSymbolicLink()) throw new Error(`Symlink/junction is not supported: ${current}`);
     } catch (error) { if (hasCode(error, 'ENOENT')) return; throw error; }
   }
 }
@@ -72,7 +72,7 @@ export async function noLinks(target: string): Promise<void> {
 type Entry = { name: string; kind: 'directory' } | { name: string; kind: 'file'; bytes: Buffer };
 
 async function entries(directory: string, relative = '', result: Entry[] = [], upstream = false): Promise<Entry[]> {
-  for (const entry of await readdir(path.join(directory, relative), { withFileTypes: true })) {
+  for (const entry of await fs.readdir(path.join(directory, relative), { withFileTypes: true })) {
     const name = relative ? `${relative}/${entry.name}` : entry.name;
     const file = path.join(directory, name);
     if (entry.isSymbolicLink()) throw new Error(`Symlink is not supported: ${file}`);
@@ -83,7 +83,7 @@ async function entries(directory: string, relative = '', result: Entry[] = [], u
       continue;
     }
     if (!entry.isFile()) throw new Error(`Unsupported file type: ${file}`);
-    result.push({ name, kind: 'file', bytes: await readFile(file) });
+    result.push({ name, kind: 'file', bytes: await fs.readFile(file) });
   }
   return result;
 }
@@ -102,9 +102,9 @@ export async function skillHash(directory: string): Promise<string> {
 export async function fingerprint(target: string): Promise<string | null> {
   await noLinks(target);
   if (!await exists(target)) return null;
-  const stat = await lstat(target);
+  const stat = await fs.lstat(target);
   const hash = createHash('sha256');
-  if (stat.isFile()) return hash.update('file\0').update(await readFile(target)).digest('hex');
+  if (stat.isFile()) return hash.update('file\0').update(await fs.readFile(target)).digest('hex');
   if (!stat.isDirectory()) throw new Error(`Unsupported file type: ${target}`);
   hash.update('directory\0');
   for (const entry of (await entries(target)).sort((a, b) => a.name.localeCompare(b.name))) {
@@ -115,26 +115,26 @@ export async function fingerprint(target: string): Promise<string | null> {
 }
 
 export async function temporary<T>(prefix: string, action: (directory: string) => Promise<T>): Promise<T> {
-  const directory = await mkdtemp(path.join(process.env.SLOP_TMPDIR || tmpdir(), prefix));
+  const directory = await fs.mkdtemp(path.join(process.env.SLOP_TMPDIR || tmpdir(), prefix));
   try { return await action(directory); }
-  finally { await rm(directory, { recursive: true, force: true }); }
+  finally { await fs.rm(directory, { recursive: true, force: true }); }
 }
 
 export async function copy(source: string, destination: string): Promise<void> {
-  await mkdir(path.dirname(destination), { recursive: true });
-  await cp(source, destination, { recursive: true, force: false, errorOnExist: true });
+  await fs.mkdir(path.dirname(destination), { recursive: true });
+  await fs.cp(source, destination, { recursive: true, force: false, errorOnExist: true });
 }
 
 export async function withMutex<T>(file: string, action: () => Promise<T>): Promise<T> {
   await noLinks(file);
-  await mkdir(path.dirname(file), { recursive: true });
-  try { await mkdir(file); }
+  await fs.mkdir(path.dirname(file), { recursive: true });
+  try { await fs.mkdir(file); }
   catch (error) {
     if (hasCode(error, 'EEXIST')) throw new Error(`Another operation is running, or a stale lock exists: ${file}`);
     throw error;
   }
   try { return await action(); }
-  finally { await rm(file, { recursive: true }); }
+  finally { await fs.rm(file, { recursive: true }); }
 }
 
 export function isMain(url: string): boolean {

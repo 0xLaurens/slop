@@ -3,15 +3,15 @@
   "private": true,
   "type": "module",
   "engines": {
-    "node": ">=22.20.0"
+    "bun": "1.4.3"
   },
   "scripts": {
-    "tui": "node scripts/tui.ts",
-    "install:global": "node scripts/install.ts",
-    "uninstall:global": "node scripts/install.ts --uninstall",
-    "skills:update": "node scripts/update-skills.ts",
-    "typecheck": "tsc --noEmit",
-    "test": "node --test test/*.test.ts"
+    "tui": "bun scripts/tui.ts",
+    "install:global": "bun scripts/install.ts",
+    "uninstall:global": "bun scripts/install.ts --uninstall",
+    "skills:update": "bun scripts/update-skills.ts",
+    "typecheck": "bun node_modules/typescript/bin/tsc --noEmit",
+    "test": "bun test"
   },
   "dependencies": {
     "skills": "1.7.2",

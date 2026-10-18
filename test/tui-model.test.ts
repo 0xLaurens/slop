@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import test from 'node:test';
+import { test } from 'node:test';
 import { install } from '../scripts/install.ts';
 import { checkDeletionPrerequisites } from '../scripts/manage.ts';
 import { deploymentAction, deploymentPlan, inventory } from '../scripts/deployment-plan.ts';

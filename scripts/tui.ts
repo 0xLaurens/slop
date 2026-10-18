@@ -1,5 +1,5 @@
-import { closeSync, openSync, writeSync } from 'node:fs';
-import { mkdir, readFile } from 'node:fs/promises';
+import fs from 'node:fs/promises';
+import syncFs from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { errorMessage, parseUpstream } from './data.ts';
@@ -30,9 +30,9 @@ interface Operation {
 async function operation(ui: Terminal, title: string, action: (operation: Operation) => Promise<Outcome>, totalSkills = 0): Promise<void> {
   const logs = path.join(repository, '.slop', 'logs');
   await noLinks(logs);
-  await mkdir(logs, { recursive: true });
+  await fs.mkdir(logs, { recursive: true });
   const logFile = path.join(logs, `${Date.now()}-${randomUUID()}.log`);
-  const fd = openSync(logFile, 'wx', 0o600);
+  const fd = syncFs.openSync(logFile, 'wx', 0o600);
   const lines: string[] = ['Preparing…'];
   let cancelled = false;
   let atomic = false;
@@ -45,7 +45,7 @@ async function operation(ui: Terminal, title: string, action: (operation: Operat
     redraw();
   };
   const check = () => { if (cancelled || ui.shutdownRequested) throw new Cancelled('Cancelled before the next file transaction. Completed work, if any, is retained.'); };
-  const diagnostic = (message: string) => { writeSync(fd, `${message}\n`); };
+  const diagnostic = (message: string) => { syncFs.writeSync(fd, `${message}\n`); };
   const log = (message: string) => {
     diagnostic(message);
     lines.push(...message.split('\n'));
@@ -73,7 +73,7 @@ async function operation(ui: Terminal, title: string, action: (operation: Operat
   } catch (error) {
     outcome = failureOutcome(error);
     diagnostic(`${outcome.status}: ${outcome.summary}`);
-  } finally { closeSync(fd); }
+  } finally { syncFs.closeSync(fd); }
   while (true) {
     const answer = (await ui.select(`${title} — ${outcome.status}`, [
       { value: 'back', label: 'Back to main menu' },
@@ -82,7 +82,7 @@ async function operation(ui: Terminal, title: string, action: (operation: Operat
     ], [], false, { intro: outcome.summary.split('\n').filter(Boolean).slice(0, 4), continueLabel: 'choose' }))?.[0];
     if (!answer || answer === 'back') return;
     await ui.page(answer === 'logs' ? 'Diagnostics' : outcome.status,
-      answer === 'logs' ? `${logFile}\n\n${await readFile(logFile, 'utf8')}` : outcome.summary);
+      answer === 'logs' ? `${logFile}\n\n${await fs.readFile(logFile, 'utf8')}` : outcome.summary);
   }
 }
 
@@ -247,7 +247,7 @@ async function remove(ui: Terminal, config: string): Promise<void> {
 export async function main(): Promise<void> {
   const args = options({ 'config-dir': { type: 'string' }, help: { type: 'boolean' } });
   if (args.help) {
-    console.log('npm run tui -- [--config-dir PATH]\nInteractive management of repository sources and global OpenCode files.');
+    console.log('bun run tui [--config-dir PATH]\nInteractive management of repository sources and global OpenCode files.');
     return;
   }
   const ui = new Terminal();

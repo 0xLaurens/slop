@@ -1,4 +1,4 @@
-import { readdir } from 'node:fs/promises';
+import fs from 'node:fs/promises';
 import path from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import { diagnostic, errorMessage, parseUpstream } from './data.ts';
@@ -137,7 +137,7 @@ export async function updateSkills({ repo = repository, only, interactive = Bool
     let snapshot: LockSnapshot = { lock, fingerprint: before };
     const directory = path.join(repo, '.agents', 'skills');
     await noLinks(directory);
-    const names = (await readdir(directory, { withFileTypes: true }))
+    const names = (await fs.readdir(directory, { withFileTypes: true }))
       .filter((entry) => entry.name !== '.gitkeep').map((entry) => safeName(entry.name));
     if (selected && !names.includes(selected)) throw new Error(`Unknown skill: ${selected}`);
     const selection = selections?.map(safeName);
@@ -174,7 +174,7 @@ export async function updateSkills({ repo = repository, only, interactive = Bool
 async function main(): Promise<void> {
   const args = options({ skill: { type: 'string' }, 'non-interactive': { type: 'boolean' }, help: { type: 'boolean' } });
   if (args.help) {
-    console.log('npm run skills:update -- [--skill NAME] [--non-interactive]\nModified skills require individual interactive confirmation; default is Keep.');
+    console.log('bun run skills:update [--skill NAME] [--non-interactive]\nModified skills require individual interactive confirmation; default is Keep.');
     return;
   }
   const result = await updateSkills({ only: args.skill, interactive: !args['non-interactive'] && Boolean(process.stdin.isTTY && process.stdout.isTTY) });

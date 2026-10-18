@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process';
-import { mkdir, rename, rm } from 'node:fs/promises';
+import fs from 'node:fs/promises';
 import path from 'node:path';
 import { diagnostic, errorMessage } from './data.ts';
 import type { StageSkill } from './data.ts';
@@ -15,7 +15,7 @@ import { RecoveryRequiredError } from './operation-errors.ts';
 
 export function configDirectory(override?: string): string {
   if (override) return path.resolve(override);
-  // Fixed command only: Windows needs a shell to support npm's opencode.cmd shim.
+  // Fixed command only: Windows needs a shell to support Bun's opencode.cmd shim.
   const result = process.platform === 'win32'
     ? spawnSync('opencode debug paths config', { shell: true, encoding: 'utf8' })
     : spawnSync('opencode', ['debug', 'paths', 'config'], { encoding: 'utf8' });
@@ -32,7 +32,7 @@ async function deploy(config: string, desired: ReadonlyMap<string, DeploymentSou
   const transaction = path.join(state, 'transaction');
   if (await exists(transaction)) throw new RecoveryRequiredError(`Interrupted install: inspect/recover ${transaction} before retrying.`,
     { kind: 'deployment', transaction }, []);
-  await mkdir(transaction);
+  await fs.mkdir(transaction);
   const changed = [...new Set([...desired.keys(), ...Object.keys(previous.files)])];
   const saved: string[] = [];
   const installed: string[] = [];
@@ -41,8 +41,8 @@ async function deploy(config: string, desired: ReadonlyMap<string, DeploymentSou
       const destination = path.join(config, target);
       if (await exists(destination)) {
         const backup = path.join(transaction, target);
-        await mkdir(path.dirname(backup), { recursive: true });
-        await rename(destination, backup);
+        await fs.mkdir(path.dirname(backup), { recursive: true });
+        await fs.rename(destination, backup);
         saved.push(target);
       }
       const entry = desired.get(target);
@@ -60,19 +60,19 @@ async function deploy(config: string, desired: ReadonlyMap<string, DeploymentSou
     await writeJson(path.join(state, 'manifest.json'), manifest);
   } catch (error) {
     try {
-      for (const target of installed.reverse()) await rm(path.join(config, target), { recursive: true, force: true });
+      for (const target of installed.reverse()) await fs.rm(path.join(config, target), { recursive: true, force: true });
       for (const target of saved.reverse()) {
-        await mkdir(path.dirname(path.join(config, target)), { recursive: true });
-        await rename(path.join(transaction, target), path.join(config, target));
+        await fs.mkdir(path.dirname(path.join(config, target)), { recursive: true });
+        await fs.rename(path.join(transaction, target), path.join(config, target));
       }
-      await rm(transaction, { recursive: true });
+      await fs.rm(transaction, { recursive: true });
     } catch (rollback) {
       throw new RecoveryRequiredError(`Install and rollback failed; recover files from ${transaction}`,
         { kind: 'deployment', transaction }, [error, rollback]);
     }
     throw error;
   }
-  try { await rm(transaction, { recursive: true }); }
+  try { await fs.rm(transaction, { recursive: true }); }
   catch (error) { throw new RecoveryRequiredError(`Installation completed; recover transaction cleanup at ${transaction}`,
     { kind: 'deployment', transaction }, [error]); }
 }
@@ -158,7 +158,7 @@ export async function install({ repo = repository, config: override, uninstall =
 async function main(): Promise<void> {
   const args = options({ 'config-dir': { type: 'string' }, uninstall: { type: 'boolean' }, help: { type: 'boolean' } });
   if (args.help) {
-    console.log('npm run install:global -- [--config-dir PATH] [--uninstall]\nConflicts abort before any installed files change.');
+    console.log('bun run install:global [--config-dir PATH] [--uninstall]\nConflicts abort before any installed files change.');
     return;
   }
   await install({ config: args['config-dir'], uninstall: args.uninstall });

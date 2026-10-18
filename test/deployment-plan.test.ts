@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import test from 'node:test';
+import { test } from 'node:test';
 import { deploymentPlan, inventory } from '../scripts/deployment-plan.ts';
 import { install } from '../scripts/install.ts';
 import { exists, fingerprint } from '../scripts/lib.ts';

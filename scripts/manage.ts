@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { mkdir, realpath, rename, rm } from 'node:fs/promises';
+import fs from 'node:fs/promises';
 import path from 'node:path';
 import { errorMessage, parseUpstream } from './data.ts';
 import type { SkillLockEntry, StageSkill } from './data.ts';
@@ -55,15 +55,15 @@ export async function importContent(repo: string, request: ImportRequest, stage:
           snapshot: { lock, fingerprint: lockHash }, nextLock, beforePublish: check });
         return target;
       }
-      await mkdir(path.dirname(destination), { recursive: true });
+      await fs.mkdir(path.dirname(destination), { recursive: true });
       // Stage on the destination filesystem so publishing is an atomic rename.
       const publish = path.join(path.dirname(destination), `.import-${randomUUID()}`);
       try {
         await copy(staged, publish);
         check();
         if (await exists(destination)) throw new Error(`Import collision: ${target} appeared during import`);
-        await rename(publish, destination);
-      } finally { await rm(publish, { recursive: true, force: true }); }
+        await fs.rename(publish, destination);
+      } finally { await fs.rm(publish, { recursive: true, force: true }); }
       return target;
     });
   });
@@ -85,7 +85,7 @@ export async function checkDeletionPrerequisites(repo: string, execute: Run = ru
   const gh = (...args: string[]) => execute('gh', args, repo);
   // Git may expand Windows short names or resolve directory aliases in its output.
   const root = await git('rev-parse', '--show-toplevel');
-  if (await realpath(root) !== await realpath(repo)) throw new Error('Repository must be the Git working-tree root');
+  if (await fs.realpath(root) !== await fs.realpath(repo)) throw new Error('Repository must be the Git working-tree root');
   if (await git('status', '--porcelain', '--untracked-files=all')) throw new Error('Working tree is not clean. Commit or resolve your changes manually before deleting. Nothing changed.');
   const startingBranch = await git('symbolic-ref', '--quiet', 'HEAD');
   await git('var', 'GIT_AUTHOR_IDENT');
@@ -174,7 +174,7 @@ export async function deleteWithPullRequest({ repo, config, targets, expected, e
       for (const target of unique) {
         const source = available.get(target)?.source;
         if (!source) throw new Error(`Source disappeared: ${target}`);
-        await rm(source, { recursive: true });
+        await fs.rm(source, { recursive: true });
       }
       if (lockChanged) await writeJson(lockFile, { ...lock, skills });
       const commitPaths = [...paths, ...lockChanged ? ['skills-lock.json'] : []];

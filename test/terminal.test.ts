@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { PassThrough } from 'node:stream';
 import { setImmediate } from 'node:timers/promises';
-import test from 'node:test';
+import { test } from 'node:test';
 import type { TestContext } from 'node:test';
 import { cleanText, Terminal } from '../scripts/terminal.ts';
 import { fit, removeLastGrapheme, tail, wrap } from '../scripts/terminal-text.ts';
