@@ -3,9 +3,8 @@ import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { cp, mkdir, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
 import fs from 'node:fs/promises';
-import { syncBuiltinESMExports } from 'node:module';
 import path from 'node:path';
-import test from 'node:test';
+import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { diagnostic, errorMessage, hasCode, parseSkillsLock, parseUpstream } from '../scripts/data.ts';
 import { exists, fingerprint, json, options, readSkillsLock, safeName, skillHash, writeJson } from '../scripts/lib.ts';
@@ -115,8 +114,8 @@ test('CLI options distinguish strings and booleans and reject invalid arguments'
 test('script help returns before install or update validation', async (t) => {
   const { repo, config } = await fixture(t);
   for (const [script, args, usage] of [
-    ['install.ts', ['--config-dir', config], 'npm run install:global'],
-    ['update-skills.ts', ['--skill', '../invalid'], 'npm run skills:update'],
+    ['install.ts', ['--config-dir', config], 'bun run install:global'],
+    ['update-skills.ts', ['--skill', '../invalid'], 'bun run skills:update'],
   ] as const) {
     const result = spawnSync(process.execPath, [
       fileURLToPath(new URL(`../scripts/${script}`, import.meta.url)), '--help', ...args,
@@ -249,12 +248,11 @@ test('deployment failure restores earlier files and the previous manifest', asyn
   const skillBefore = await fingerprint(path.join(config, 'skills', 'demo'));
   await writeFile(path.join(repo, '.agents', 'agents', 'review.md'), 'Updated agent');
   const copy = fs.cp;
-  t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
+  t.after(() => { t.mock.restoreAll(); });
   t.mock.method(fs, 'cp', async (...args: Parameters<typeof fs.cp>) => {
     if (args[1] === path.join(config, 'skills', 'demo')) throw new Error('Deployment copy failed');
     return copy(...args);
   });
-  syncBuiltinESMExports();
   await assert.rejects(install({ repo, config, stageSkill }), /Deployment copy failed/);
   assert.equal(await readFile(path.join(config, 'agents', 'review.md'), 'utf8'), 'Original agent');
   assert.equal(await fingerprint(path.join(config, 'skills', 'demo')), skillBefore);

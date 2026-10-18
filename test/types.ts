@@ -1,4 +1,4 @@
-// Compile-time regression tests, checked by `npm run typecheck`, not executed.
+// Compile-time regression tests, checked by `bun run typecheck`, not executed.
 import { options, safeName, skillName } from '../scripts/lib.ts';
 import type { InstallOptions } from '../scripts/install.ts';
 import type { DeploymentManifest } from '../scripts/deployment-state.ts';

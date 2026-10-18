@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { mkdir, rename, rm } from 'node:fs/promises';
+import fs from 'node:fs/promises';
 import path from 'node:path';
 import { errorMessage } from './data.ts';
 import type { SkillName, SkillsLock } from './data.ts';
@@ -53,7 +53,7 @@ export async function commitSkill({ repo, name, change, snapshot, nextLock, befo
   const publishLock = path.join(transaction, 'publish-lock.json');
   const backup = path.join(repo, '.slop', 'backups', `${name}-${Date.now()}-${randomUUID()}`);
   await noLinks(backup);
-  await mkdir(transaction);
+  await fs.mkdir(transaction);
   let saved = false;
   let installed = false;
   let published = false;
@@ -76,16 +76,16 @@ export async function commitSkill({ repo, name, change, snapshot, nextLock, befo
     beforePublish();
     if (replacement !== undefined) {
       if (change.kind === 'update') {
-        await mkdir(path.dirname(backup), { recursive: true });
-        await rename(current, backup);
+        await fs.mkdir(path.dirname(backup), { recursive: true });
+        await fs.rename(current, backup);
         saved = true;
-      } else await mkdir(path.dirname(current), { recursive: true });
-      await rename(prepared, current);
+      } else await fs.mkdir(path.dirname(current), { recursive: true });
+      await fs.rename(prepared, current);
       installed = true;
     }
     // Publish the prepared bytes with one syscall. Derive the expected snapshot
     // from those bytes, not a later read that might include an editor's changes.
-    await rename(publishLock, lockFile);
+    await fs.rename(publishLock, lockFile);
     published = true;
     await writeJson(path.join(transaction, 'journal.json'), { ...journal, phase: 'committed' });
     committed = { lock: nextLock, fingerprint: lockAfter };
@@ -94,11 +94,11 @@ export async function commitSkill({ repo, name, change, snapshot, nextLock, befo
       if (published) {
         const restoreLock = path.join(transaction, 'restore-lock.json');
         await copy(oldLock, restoreLock);
-        await rename(restoreLock, lockFile);
+        await fs.rename(restoreLock, lockFile);
       }
-      if (installed) await rm(current, { recursive: true });
-      if (saved) await rename(backup, current);
-      await rm(transaction, { recursive: true });
+      if (installed) await fs.rm(current, { recursive: true });
+      if (saved) await fs.rename(backup, current);
+      await fs.rm(transaction, { recursive: true });
     } catch (rollback) {
       throw new SkillRecoveryError(transaction, [error, rollback]);
     }
@@ -106,7 +106,7 @@ export async function commitSkill({ repo, name, change, snapshot, nextLock, befo
   }
   // Cleanup failure must not roll back an already committed update or allow the
   // next skill to proceed with unresolved transaction state.
-  try { await rm(transaction, { recursive: true }); }
+  try { await fs.rm(transaction, { recursive: true }); }
   catch (error) { throw new SkillRecoveryError(transaction, [error]); }
   return committed;
 }

@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { mkdir } from 'node:fs/promises';
+import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { RemoteUpstream, StageSkill } from './data.ts';
@@ -26,7 +26,7 @@ export function createSkillsAdd(log: (message: string) => void = () => {}): Stag
   return async ({ source, name, workspace, skillPath }) => {
     const home = path.join(workspace, 'home');
     const cwd = path.join(workspace, 'project');
-    await Promise.all([mkdir(home, { recursive: true }), mkdir(cwd, { recursive: true })]);
+    await Promise.all([fs.mkdir(home, { recursive: true }), fs.mkdir(cwd, { recursive: true })]);
     await new Promise<void>((resolve, reject) => {
       const child = spawn(process.execPath, [cli, 'add', source, '--agent', 'opencode',
         '--skill', name, '--copy', '--yes', ...(path.isAbsolute(source) ? [] : ['--full-depth'])], {

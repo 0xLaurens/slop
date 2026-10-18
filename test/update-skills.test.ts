@@ -1,9 +1,8 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs/promises';
-import { syncBuiltinESMExports } from 'node:module';
 import path from 'node:path';
-import test from 'node:test';
+import { test } from 'node:test';
 import type { TestContext } from 'node:test';
 import { exists, fingerprint, json, readSkillsLock, writeJson } from '../scripts/lib.ts';
 import { install } from '../scripts/install.ts';
@@ -14,7 +13,7 @@ import { fixture, makeSkill, tracked, upstream } from './fixtures.ts';
 // Named builtin imports must be refreshed after installing AND restoring mocks.
 // Faults target real filesystem operations, not a separate test-only commit path.
 function mockFilesystem(t: TestContext) {
-  t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
+  t.after(() => { t.mock.restoreAll(); });
 }
 
 test('failed baseline-only publication cannot leak into a later successful update', async (t) => {
@@ -31,7 +30,6 @@ test('failed baseline-only publication cannot leak into a later successful updat
     if (args[1] === lockFile && fail) { fail = false; throw new Error('Lock publication failed'); }
     return rename(...args);
   });
-  syncBuiltinESMExports();
   const result = await updateSkills({ repo, interactive: true, ask: async () => true,
     fetchSkill: async (options) => {
       if (options.name !== 'first') return upstream(options);
@@ -59,7 +57,6 @@ test('publication failure restores the original skill and exact lock bytes', asy
     if (args[1] === lockFile) throw new Error('Lock publication failed');
     return rename(...args);
   });
-  syncBuiltinESMExports();
   const result = await updateSkills({ repo, fetchSkill: upstream });
   assert.deepEqual(result.failures, ['demo']);
   assert.equal(await fingerprint(current), before);
@@ -86,7 +83,6 @@ test('partially failed preparation never moves the live skill', async (t) => {
     }
     return cp(...args);
   });
-  syncBuiltinESMExports();
   const result = await updateSkills({ repo, fetchSkill: upstream });
   assert.deepEqual(result.failures, ['demo']);
   assert.equal(await fingerprint(current), before);
@@ -107,7 +103,6 @@ test('failed replacement rename after backup restores the original directory', a
     if (args[0] === path.join(repo, '.slop', 'update-transaction', 'replacement')) throw new Error('Replacement rename failed');
     return rename(...args);
   });
-  syncBuiltinESMExports();
   assert.deepEqual((await updateSkills({ repo, fetchSkill: upstream })).failures, ['demo']);
   assert.equal(await fingerprint(current), before);
   assert.equal(await fingerprint(lockFile), previous);
@@ -128,7 +123,6 @@ test('rollback failure preserves both errors and recovery files, and stops later
     if (args[1] === current && args[0].toString().includes(`${path.sep}backups${path.sep}`)) throw new Error('Restore failed');
     return rename(...args);
   });
-  syncBuiltinESMExports();
   const fetched: string[] = [];
   await assert.rejects(updateSkills({ repo, fetchSkill: async (options) => {
     fetched.push(options.name);
@@ -164,7 +158,6 @@ test('failure after lock publication rolls back both skill content and baseline'
     if (args[1] === journalFile && ++publications === 2) throw new Error('Commit marker failed');
     return rename(...args);
   });
-  syncBuiltinESMExports();
   assert.deepEqual((await updateSkills({ repo, fetchSkill: upstream })).failures, ['demo']);
   assert.equal(await fingerprint(current), before);
   assert.equal(await fs.readFile(lockFile, 'utf8'), previous);
@@ -181,7 +174,6 @@ test('process interruption after backup blocks discovery and leaves usable recov
   const child = spawnSync(process.execPath, ['--input-type=module', '-e', `
     import fs from 'node:fs/promises';
     import path from 'node:path';
-    import { syncBuiltinESMExports } from 'node:module';
     import { updateSkills } from ${JSON.stringify(new URL('../scripts/update-skills.ts', import.meta.url).href)};
     const rename = fs.rename;
     const current = ${JSON.stringify(current)};
@@ -189,7 +181,6 @@ test('process interruption after backup blocks discovery and leaves usable recov
       await rename(...args);
       if (args[0] === current) process.exit(73);
     };
-    syncBuiltinESMExports();
     await updateSkills({ repo: ${JSON.stringify(repo)}, fetchSkill: async ({ name, workspace }) => {
       const directory = path.join(workspace, name);
       await fs.mkdir(directory);
@@ -269,7 +260,6 @@ test('post-commit cleanup failure leaves committed recovery state and stops furt
     if (args[0] === transaction) throw new Error('Transaction cleanup failed');
     return rm(...args);
   });
-  syncBuiltinESMExports();
   const fetched: string[] = [];
   await assert.rejects(updateSkills({ repo, fetchSkill: async (options) => {
     fetched.push(options.name);
@@ -294,7 +284,6 @@ test('edits made while preparing a replacement are preserved', async (t) => {
     await cp(...args);
     if (args[1] === path.join(transaction, 'replacement')) await fs.writeFile(path.join(current, 'editor.txt'), 'New edit');
   });
-  syncBuiltinESMExports();
   assert.deepEqual((await updateSkills({ repo, fetchSkill: upstream })).failures, ['demo']);
   assert.equal(await fs.readFile(path.join(current, 'editor.txt'), 'utf8'), 'New edit');
   assert.equal(await exists(transaction), false);
@@ -316,7 +305,6 @@ test('lock edits immediately after publication are not adopted as our expected s
       await fs.writeFile(lockFile, JSON.stringify(edited));
     }
   });
-  syncBuiltinESMExports();
   const result = await updateSkills({ repo, fetchSkill: upstream });
   assert.deepEqual(result.updated, ['first']);
   assert.deepEqual(result.failures, ['second']);
@@ -343,7 +331,6 @@ test('rollback after publication retains the previous lock if restoring the skil
     if (args[0] === current) throw new Error('Cannot remove replacement');
     return rm(...args);
   });
-  syncBuiltinESMExports();
   await assert.rejects(updateSkills({ repo, fetchSkill: upstream }), /Commit marker failed; Cannot remove replacement/);
   assert.equal(await fs.readFile(lockFile, 'utf8'), previous);
   assert.equal(await fs.readFile(path.join(transaction, 'previous-lock.json'), 'utf8'), previous);

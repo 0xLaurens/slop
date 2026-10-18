@@ -1,4 +1,4 @@
-import { readFile, readdir } from 'node:fs/promises';
+import fs from 'node:fs/promises';
 import { homedir } from 'node:os';
 import path from 'node:path';
 import { parse } from 'yaml';
@@ -6,7 +6,7 @@ import { isRecord, parseUpstream } from './data.ts';
 import { noLinks, readSkillsLock, repository } from './lib.ts';
 import { deploymentAction } from './deployment-plan.ts';
 import type { DeploymentAction, DeploymentPlan, Item } from './deployment-plan.ts';
-import type { Choice } from './terminal.ts';
+import type { Choice, ReviewContent } from './terminal.ts';
 
 export function installationStatus(action: DeploymentAction): string {
   switch (action.kind) {
@@ -26,16 +26,23 @@ export function installationSummary(plan: DeploymentPlan): string {
   return `${count('install')} install · ${count('replace')} replace · ${count('uninstall')} uninstall · ${count('keep') + count('none')} unchanged${blocked ? ` · ${blocked} blocked` : ''}`;
 }
 
-export function installationReview(plan: DeploymentPlan): string[] {
+export function installationReview(plan: DeploymentPlan): ReviewContent {
   const groups = [
     { kind: 'install', label: 'Install' }, { kind: 'replace', label: 'Replace installed copies' },
     { kind: 'uninstall', label: 'Uninstall globally' }, { kind: 'blocked', label: 'Blocked — resolve before applying' },
   ];
-  return [`Destination: ${plan.config}`, 'Repository files: unchanged', '', installationSummary(plan), '',
-    ...groups.flatMap(({ kind, label }) => {
+  const pending = plan.actions.filter((action) => ['install', 'replace', 'uninstall'].includes(action.kind)).length;
+  const unchanged = plan.actions.filter((action) => action.kind === 'keep' || action.kind === 'none').length;
+  const blocked = plan.actions.filter((action) => action.kind === 'blocked').length;
+  return {
+    summary: `${pending} pending change${pending === 1 ? '' : 's'} · ${unchanged} unchanged${blocked ? ` · ${blocked} blocked` : ''}`,
+    context: [`Destination: ${plan.config}`, 'Repository files: unchanged'],
+    sections: groups.flatMap(({ kind, label }) => {
       const matching = plan.actions.filter((action) => action.kind === kind);
-      return matching.length ? [label, ...matching.map((action) => `  ${action.target}${action.kind === 'uninstall' && action.missing ? ' (clear missing entry)' : action.kind === 'blocked' ? `: ${action.reason}` : ''}`), ''] : [];
-    })];
+      return matching.length ? [{ title: `${label} · ${matching.length}`,
+        items: matching.map((action) => `${action.target}${action.kind === 'uninstall' && action.missing ? ' (clear missing entry)' : action.kind === 'blocked' ? `: ${action.reason}` : ''}`) }] : [];
+    }),
+  };
 }
 
 type FileChoicesRequest = { items: readonly Item[]; repo?: string } &
@@ -51,7 +58,7 @@ export async function fileChoices(request: FileChoicesRequest): Promise<Choice[]
     const name = skill ? item.target.slice(7) : agent ? item.target.slice(7, -3) : 'Shared instructions (AGENTS.md)';
     let description = '';
     if (item.source) {
-      const text = await readFile(skill ? path.join(item.source, 'SKILL.md') : item.source, 'utf8');
+      const text = await fs.readFile(skill ? path.join(item.source, 'SKILL.md') : item.source, 'utf8');
       const frontmatter = text.match(/^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/)?.[1];
       if (frontmatter) {
         try { const metadata: unknown = parse(frontmatter); if (isRecord(metadata) && typeof metadata.description === 'string') description = metadata.description; }
@@ -84,7 +91,7 @@ export async function completePath(value: string, base = repository): Promise<st
   const directory = endsWithSeparator || !value ? resolved : path.dirname(resolved);
   const prefix = endsWithSeparator || !value ? '' : path.basename(resolved);
   await noLinks(directory);
-  const matches = (await readdir(directory, { withFileTypes: true }))
+  const matches = (await fs.readdir(directory, { withFileTypes: true }))
     .filter((entry) => !entry.isSymbolicLink() && (entry.isFile() || entry.isDirectory()) && entry.name.startsWith(prefix));
   const typedDirectory = endsWithSeparator ? value : value.slice(0, Math.max(0, value.length - prefix.length));
   return matches.sort((a, b) => a.name.localeCompare(b.name)).map((entry) => `${typedDirectory}${entry.name}${entry.isDirectory() ? path.sep : ''}`);

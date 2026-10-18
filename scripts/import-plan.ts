@@ -1,4 +1,4 @@
-import { lstat } from 'node:fs/promises';
+import fs from 'node:fs/promises';
 import path from 'node:path';
 import { parseUpstream } from './data.ts';
 import type { SkillName } from './data.ts';
@@ -18,7 +18,7 @@ export async function prepareImport({ repo, request }: { repo: string; request: 
   } else {
     await noLinks(source);
     if (request.kind === 'agent') {
-      if (!(await lstat(source)).isFile() || !source.endsWith('.md')) throw new Error('Choose an existing Markdown (.md) file.');
+      if (!(await fs.lstat(source)).isFile() || !source.endsWith('.md')) throw new Error('Choose an existing Markdown (.md) file.');
       name = safeName(path.basename(source, '.md'));
     } else name = await skillName(source);
   }

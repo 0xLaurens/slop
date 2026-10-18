@@ -1,9 +1,8 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs/promises';
-import { syncBuiltinESMExports } from 'node:module';
 import path from 'node:path';
-import test from 'node:test';
+import { test } from 'node:test';
 import { prepareImport } from '../scripts/import-plan.ts';
 import { install } from '../scripts/install.ts';
 import { exists, fingerprint, json, readSkillsLock } from '../scripts/lib.ts';
@@ -18,12 +17,11 @@ test('failed import lock publication rolls back the new skill and preserves exac
   const lockFile = path.join(repo, 'skills-lock.json');
   const previous = await fs.readFile(lockFile, 'utf8');
   const rename = fs.rename;
-  t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
+  t.after(() => { t.mock.restoreAll(); });
   t.mock.method(fs, 'rename', async (...args: Parameters<typeof fs.rename>) => {
     if (args[1] === lockFile) throw new Error('Lock publication failed');
     return rename(...args);
   });
-  syncBuiltinESMExports();
   await assert.rejects(importContent(repo, { kind: 'local-skill', source }), /Lock publication failed/);
   assert.equal(await exists(path.join(repo, '.agents/skills/demo')), false);
   assert.equal(await fs.readFile(lockFile, 'utf8'), previous);
@@ -36,7 +34,7 @@ test('failed import rollback retains the journal and typed recovery information'
   const destination = path.join(repo, '.agents/skills/demo');
   const rename = fs.rename;
   const rm = fs.rm;
-  t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
+  t.after(() => { t.mock.restoreAll(); });
   t.mock.method(fs, 'rename', async (...args: Parameters<typeof fs.rename>) => {
     if (args[1] === path.join(repo, 'skills-lock.json')) throw new Error('Lock publication failed');
     return rename(...args);
@@ -45,7 +43,6 @@ test('failed import rollback retains the journal and typed recovery information'
     if (args[0] === destination) throw new Error('Cannot remove import');
     return rm(...args);
   });
-  syncBuiltinESMExports();
   await assert.rejects(importContent(repo, { kind: 'local-skill', source }), (error: unknown) => {
     assert.ok(error instanceof SkillRecoveryError);
     assert.equal(error.recovery.kind, 'skill');
@@ -67,14 +64,12 @@ test('an interrupted remote import keeps recoverable provenance and blocks all f
   const child = spawnSync(process.execPath, ['--input-type=module', '-e', `
     import fs from 'node:fs/promises';
     import path from 'node:path';
-    import { syncBuiltinESMExports } from 'node:module';
     import { importContent } from ${JSON.stringify(new URL('../scripts/manage.ts', import.meta.url).href)};
     const rename = fs.rename;
     fs.rename = async (...args) => {
       await rename(...args);
       if (args[1] === ${JSON.stringify(destination)}) process.exit(73);
     };
-    syncBuiltinESMExports();
     await importContent(${JSON.stringify(repo)}, {kind: 'remote-skill', source: 'example/skills', name: 'demo'}, async ({workspace}) => {
       const directory = path.join(workspace, 'demo');
       await fs.mkdir(directory);

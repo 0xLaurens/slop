@@ -1,8 +1,7 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
-import { syncBuiltinESMExports } from 'node:module';
 import path from 'node:path';
-import test from 'node:test';
+import { test } from 'node:test';
 import { Cancelled, RecoveryRequiredError } from '../scripts/operation-errors.ts';
 import { failureOutcome } from '../scripts/operation-outcome.ts';
 import { updateSkills, UpdateRunError } from '../scripts/update-skills.ts';
@@ -22,12 +21,11 @@ test('fatal update recovery retains completed work and identifies the interrupte
   const transaction = path.join(repo, '.slop/update-transaction');
   const rm = fs.rm;
   let cleanups = 0;
-  t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
+  t.after(() => { t.mock.restoreAll(); });
   t.mock.method(fs, 'rm', async (...args: Parameters<typeof fs.rm>) => {
     if (args[0] === transaction && ++cleanups === 2) throw new Error('Cannot clean second publication');
     return rm(...args);
   });
-  syncBuiltinESMExports();
   const fetched: string[] = [];
   await assert.rejects(updateSkills({ repo, log: () => {}, report: () => {}, fetchSkill: async (request) => {
     fetched.push(request.name);

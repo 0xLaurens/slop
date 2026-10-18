@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import test from 'node:test';
+import { test } from 'node:test';
 import { deploymentPlan, inventory } from '../scripts/deployment-plan.ts';
 import { install } from '../scripts/install.ts';
 import { exists, fingerprint } from '../scripts/lib.ts';
@@ -16,7 +16,7 @@ test('reviewed installation rejects repository edits during staging without chan
   const before = await fingerprint(config);
   const plan = deploymentPlan({ repo, config, items: await inventory(repo, config), selected: new Set(['skills/demo']) });
   assert.equal(installationSummary(plan), '0 install · 1 replace · 0 uninstall · 0 unchanged');
-  assert.ok(installationReview(plan).includes('Replace installed copies'));
+  assert.ok(installationReview(plan).sections.some((section) => section.title === 'Replace installed copies · 1'));
   await assert.rejects(install({ repo, plan, stageSkill: async (request) => {
     await writeFile(path.join(source, 'unreviewed.txt'), 'Unreviewed change');
     return stageSkill(request);

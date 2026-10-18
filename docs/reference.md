@@ -50,7 +50,9 @@ Skills, agents, and shared instructions have separate headings.
 | **n** | Clear visible matches |
 | **d** | Show the highlighted skill or agent's description and source |
 | **?** | Open keyboard help without losing selections |
-| **Left**, **Right**, **Tab** on review | Choose the back or apply button |
+| **Up**, **Down** on review | Choose the back or apply action |
+| **Page Up**, **Page Down**, **Home**, **End** on review | Scroll review changes |
+| **Left**, **Right**, **Tab** on review | Action-selection aliases |
 | **Tab** in an import path prompt | Complete a local path |
 
 Selections outside the filter remain selected and contribute to the count.
@@ -59,7 +61,10 @@ Selections are not saved between workflows or sessions. Uninstalled items start
 unchecked. Pending actions use **Keep**, **Install**, **Replace**, and **Uninstall**
 labels, with counts that change as selections change.
 
-Review and confirmation share a screen. The default button returns to selection.
+Review and confirmation share a screen. Back and apply appear directly beneath
+visible changes, and Enter names the selected action. Back is the default;
+Up/Down selects an action. Page Up/Down, Home, and End scroll changes without
+approving them. Esc cancels.
 Returning preserves the choices, filter, and focused row for that workflow.
 
 ### Imports and updates
@@ -95,7 +100,7 @@ disables color output. No action depends on color alone.
 
 ## Installation safety
 
-The installer uses Vercel's `skills@1.7.2` CLI, pinned in `package-lock.json`,
+The installer uses Vercel's `skills@1.7.2` CLI, pinned in `bun.lock`,
 to stage skills in an isolated temporary home and project. It then deploys copies
 to OpenCode's config directory. It does not run a direct global `skills add`,
 change other agents' installations, or depend on the CLI's global path assumptions.
@@ -123,7 +128,7 @@ Recovery steps are in [Recover blocked operations](recovery.md).
 
 ## Skill updates
 
-`npm run skills:update` reads the original source, optional ref, and skill path
+`bun run skills:update` reads the original source, optional ref, and skill path
 from `skills-lock.json`. It fetches through the pinned skills CLI. GitHub, GitLab,
 and unambiguous Git repository sources are supported. Skills without lock entries,
 local sources, and npm-installed sources are skipped.
@@ -180,9 +185,9 @@ retry steps. No automatic rollback or branch switch occurs.
 
 ## Development
 
-Scripts run TypeScript directly in Node through native type stripping. There is
+Scripts run TypeScript directly with Bun's native TypeScript support. There is
 no build step, loader, or transpiler. Only erasable TypeScript syntax is supported.
-Node does not type-check. `npm run typecheck` checks scripts and tests in strict
+Bun does not type-check. `bun run typecheck` checks scripts and tests in strict
 mode without emitting files. Runtime validation checks JSON and YAML before use
 as typed application data. The terminal interface adds no UI dependencies.
 
