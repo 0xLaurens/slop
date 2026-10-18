@@ -3,6 +3,8 @@ const segmenter = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
 const graphemes = (text: string) => [...segmenter.segment(cleanText(text))].map(({ segment }) => segment);
 // Approximate layout as one column per grapheme; wide glyphs may overflow.
 const textWidth = (text: string): number => graphemes(text).length;
+export const displayWidth = textWidth;
+export const graphemeSlice = (text: string, start: number, end?: number): string => graphemes(text).slice(start, end).join('');
 
 export function removeLastGrapheme(text: string): string {
   return graphemes(text).slice(0, -1).join('');

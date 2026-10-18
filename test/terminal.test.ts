@@ -289,6 +289,64 @@ test('one-row list viewports keep the focused choice visible through navigation 
   assert.deepEqual(await selection, ['second']);
 });
 
+test('inline descriptions keep selection styling on the label and work without color', async (t) => {
+  const previous = process.env.NO_COLOR;
+  process.env.NO_COLOR = '';
+  t.after(() => { if (previous === undefined) delete process.env.NO_COLOR; else process.env.NO_COLOR = previous; });
+  const { ui, key, output, screen } = terminal(t);
+  output.columns = 80; output.rows = 12;
+  const selection = ui.select('Choose', [{ value: 'first', label: 'Install / uninstall', detail: 'Choose what is installed globally in OpenCode.' },
+    { value: 'next', label: 'Next item', detail: 'Another description.' }], [], false, { showDescriptions: true });
+  const frame = () => cleanText(screen().split('\x1b[2J').at(-1) ?? '');
+  assert.match(frame(), /› Install \/ uninstall \| Choose what is installed globally/);
+  assert.doesNotMatch(screen(), /\x1b\[\d+m/);
+  key('down');
+  assert.match(frame(), /› Next item \| Another description/);
+  key('return');
+  assert.deepEqual(await selection, ['next']);
+});
+
+test('inline color styles only the selected label, not its delimiter or description', async (t) => {
+  const previous = process.env.NO_COLOR;
+  const oldTerm = process.env.TERM;
+  delete process.env.NO_COLOR;
+  process.env.TERM = 'xterm';
+  t.after(() => { if (previous === undefined) delete process.env.NO_COLOR; else process.env.NO_COLOR = previous; if (oldTerm === undefined) delete process.env.TERM; else process.env.TERM = oldTerm; });
+  const { ui, key, screen } = terminal(t);
+  const selection = ui.select('Choose', [{ value: 'first', label: 'A | B 中文', detail: 'safe description' }, { value: 'second', label: 'Other', detail: 'neutral' }], [], false, { showDescriptions: true });
+  const frame = () => screen().split('\x1b[2J').at(-1) ?? '';
+  assert.match(frame(), /› \x1b\[1;36mA \| B 中文\x1b\[0m\x1b\[2m \| safe description/);
+  assert.match(frame(), /\x1b\[1mOther\x1b\[0m\x1b\[2m \| neutral/);
+  key('down');
+  assert.match(frame(), /› \x1b\[1;36mOther\x1b\[0m\x1b\[2m \| neutral/);
+  assert.match(frame(), /\x1b\[1mA \| B 中文\x1b\[0m\x1b\[2m \| safe description/);
+  key('d'); await setImmediate(); assert.match(frame(), /neutral/); assert.doesNotMatch(frame(), /safe description/);
+  key('return'); await setImmediate();
+  assert.match(frame(), /› \x1b\[1;36mOther\x1b\[0m\x1b\[2m \| neutral/);
+  key('escape'); await selection;
+});
+
+test('inline menu narrow Unicode rows stay within width and dumb terminals emit no color', async (t) => {
+  const oldTerm = process.env.TERM; process.env.TERM = 'dumb';
+  t.after(() => { if (oldTerm === undefined) delete process.env.TERM; else process.env.TERM = oldTerm; });
+  const { ui, key, output, screen } = terminal(t); output.columns = 2;
+  const selection = ui.select('Choose', [{ value: 'x', label: '👨‍👩‍👧‍👦中文', detail: 'description' }], [], false, { showDescriptions: true });
+  assert.doesNotMatch(screen(), /\x1b\[\d+m/);
+  assert.ok(screen().split('\r\n').every((line) => [...cleanText(line)].length <= 1));
+  key('escape'); await selection;
+});
+
+test('inline multiple-choice styling leaves the checked prefix neutral and lights only the label', async (t) => {
+  const oldTerm = process.env.TERM; const oldColor = process.env.NO_COLOR;
+  process.env.TERM = 'xterm'; delete process.env.NO_COLOR;
+  t.after(() => { if (oldTerm === undefined) delete process.env.TERM; else process.env.TERM = oldTerm; if (oldColor === undefined) delete process.env.NO_COLOR; else process.env.NO_COLOR = oldColor; });
+  const { ui, key, screen } = terminal(t);
+  const selection = ui.select('Choose', [{ value: 'item', label: 'Selected label', detail: 'Description' }], ['item'], true, { showDescriptions: true });
+  const frame = screen().split('\x1b[2J').at(-1) ?? '';
+  assert.match(frame, /› \[x\] \x1b\[1;36mSelected label\x1b\[0m\x1b\[2m \| Description/);
+  key('escape'); await selection;
+});
+
 test('terminal text geometry approximates width while preserving graphemes', () => {
   assert.equal(fit('中文测试', 3), '中文…');
   assert.equal(fit('👨‍👩‍👧‍👦abc', 3), '👨‍👩‍👧‍👦a…');

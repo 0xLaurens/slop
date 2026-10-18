@@ -2,7 +2,7 @@ import { emitKeypressEvents } from 'node:readline';
 import type { Key } from 'node:readline';
 import type { Readable, Writable } from 'node:stream';
 import { ScreenHost } from './terminal-screen.ts';
-import { cleanText, fit, removeLastGrapheme, tail, visibleStart, wrap } from './terminal-text.ts';
+import { cleanText, displayWidth, fit, graphemeSlice, removeLastGrapheme, tail, visibleStart, wrap } from './terminal-text.ts';
 
 export { cleanText } from './terminal-text.ts';
 
@@ -96,7 +96,7 @@ export class Terminal {
     return { head, tail, capacity: Math.max(1, rows - head.length - tail.length) };
   }
 
-  private draw(title: string, lines: readonly string[], footer: string, details: readonly string[] = [], intro: readonly string[] = []): void {
+  private draw(title: string, lines: readonly string[], footer: string, details: readonly string[] = [], intro: readonly string[] = [], inlineRows: ReadonlyMap<string, { start: number; length: number; selected: boolean }> = new Map()): void {
     const { head, tail, capacity } = this.layout(title, footer, details, intro);
     const body = lines.slice(0, capacity);
     const rows = [...head, ...body, ...Array<string>(Math.max(0, capacity - body.length)).fill(''), ...tail];
@@ -107,6 +107,14 @@ export class Terminal {
       if (!color) return text;
       const style = text.includes('Permanent deletion') || text.startsWith('Deletes repository') ? '1;31'
         : text.startsWith('›') ? '1;36' : text.startsWith('──') || index === 0 ? '36' : index >= rows.length - tail.length ? '2' : '';
+      const inline = inlineRows.get(line);
+      if (inline !== undefined) {
+        const prefix = fit(line, width);
+        const start = Math.min(displayWidth(prefix), inline.start);
+        const end = Math.min(displayWidth(prefix), start + inline.length);
+        const labelStyle = inline.selected ? '1;36' : '1';
+        return `${graphemeSlice(prefix, 0, start)}\x1b[${labelStyle}m${graphemeSlice(prefix, start, end)}\x1b[0m\x1b[2m${graphemeSlice(prefix, end)}\x1b[0m`;
+      }
       return style ? `\x1b[${style}m${text}\x1b[0m` : text;
     }).join('\r\n')}`);
   }
@@ -141,21 +149,32 @@ export class Terminal {
         const details = options.showDescriptions || (this.output.rows || 24) < 18 ? [] : current?.detail ? current.detail.split('\n').slice(0, 2).map((line) => fit(line, this.width())) : [];
         const capacity = this.layout(title, footer, [...details, ''], intro).capacity;
         const lines: string[] = [];
+        const inlineRows = new Map<string, { start: number; length: number; selected: boolean }>();
         const positions: number[] = [];
         let group: string | undefined;
         visible.forEach((choice, index) => {
           if (choice.group && choice.group !== group) { lines.push(`── ${choice.group} ──`); group = choice.group; }
           positions.push(lines.length);
           const checked = selected.has(choice.value);
-          lines.push(`${index === cursor ? '›' : ' '} ${multiple ? `[${choice.disabled ? '-' : checked ? 'x' : ' '}] ` : ''}${choice.label}${choice.status ? ` · ${choice.status(checked)}` : ''}`);
-          if (options.showDescriptions && choice.detail) lines.push(...wrap(`    ${choice.detail}`, this.width()));
+          const row = `${index === cursor ? '›' : ' '} ${multiple ? `[${choice.disabled ? '-' : checked ? 'x' : ' '}] ` : ''}${choice.label}${choice.status ? ` · ${choice.status(checked)}` : ''}`;
+          if (options.showDescriptions) {
+            const width = this.width();
+            const prefix = fit(row, width);
+            const separator = ' | ';
+            const room = width - displayWidth(prefix) - displayWidth(separator);
+            const description = choice.detail && room > 0 ? fit(choice.detail.replace(/\s+/g, ' '), room) : '';
+            const inline = description ? `${prefix}${separator}${description}` : prefix;
+            lines.push(inline);
+            const labelStart = 2 + displayWidth(multiple ? `[${choice.disabled ? '-' : checked ? 'x' : ' '}] ` : '');
+            inlineRows.set(inline, { start: labelStart, length: displayWidth(choice.label), selected: index === cursor });
+          } else lines.push(row);
         });
         start = visibleStart({ position: positions[cursor] ?? 0, capacity, previous: start });
         const body = lines.length ? lines.slice(start, start + capacity) : wrap(query ? `No matches for “${query}”. Press / to change the filter.` : options.empty ?? 'No skills or agents available.', this.width());
         const visiblePositions = positions.map((position, index) => position >= start && position < start + capacity ? index + 1 : 0).filter(Boolean);
         const position = visible.length ? `Showing ${visiblePositions[0] ?? cursor + 1}–${visiblePositions.at(-1) ?? cursor + 1} of ${visible.length}${query ? ` matches (${choices.length} total)` : ''}` : '';
-        step = Math.max(1, Math.floor(capacity / (options.showDescriptions ? 3 : 1)));
-        this.draw(title, body, footer, [...details, fit(position, this.width())], intro);
+        step = Math.max(1, Math.floor(capacity));
+        this.draw(title, body, footer, [...details, fit(position, this.width())], intro, inlineRows);
       };
       const handle = (text: string, key: Key) => {
         if (key.ctrl && key.name === 'c') return finish(undefined);
