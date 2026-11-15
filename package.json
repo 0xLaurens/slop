@@ -7,6 +7,7 @@
   },
   "scripts": {
     "tui": "bun scripts/tui.ts",
+    "tui:prototype": "bun scripts/tui-prototype.ts",
     "install:global": "bun scripts/install.ts",
     "uninstall:global": "bun scripts/install.ts --uninstall",
     "skills:update": "bun scripts/update-skills.ts",
@@ -14,6 +15,7 @@
     "test": "bun test"
   },
   "dependencies": {
+    "@opentui/core": "0.6.6",
     "skills": "1.7.2",
     "yaml": "2.8.3"
   },
